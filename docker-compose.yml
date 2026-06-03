@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres
+    container_name: codereview
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: codereview
+      PGDATA: /data/postgres
+    ports:
+      - "5433:5432"

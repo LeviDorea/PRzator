@@ -1,0 +1,74 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Criticality {
+  low
+  medium
+  high
+}
+
+model Repository {
+  id             String           @id @default(cuid())
+  githubId       Int              @unique
+  owner          String
+  name           String
+  fullName       String           @unique
+  installationId Int
+  webhookId      Int?
+  createdAt      DateTime         @default(now())
+  analyses       Analysis[]
+  ruleRepos      RuleRepository[]
+}
+
+model Rule {
+  id             String           @id @default(cuid())
+  title          String
+  description    String
+  criticality    Criticality
+  fileGlobs      String[]         @default([])
+  targetLanguage String?
+  isDefault      Boolean          @default(false)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  ruleRepos      RuleRepository[]
+}
+
+model RuleRepository {
+  ruleId       String
+  repositoryId String
+  rule         Rule       @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  repository   Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@id([ruleId, repositoryId])
+}
+
+model Analysis {
+  id           String     @id @default(cuid())
+  repositoryId String
+  prNumber     Int
+  prTitle      String
+  commitSha    String
+  score        Int
+  issues       Json
+  published    Boolean    @default(false)
+  createdAt    DateTime   @default(now())
+  repository   Repository @relation(fields: [repositoryId], references: [id])
+
+  @@unique([repositoryId, prNumber, commitSha])
+}
+
+model ScoringConfig {
+  id     String @id @default(cuid())
+  high   Int    @default(10)
+  medium Int    @default(4)
+  low    Int    @default(1)
+}
