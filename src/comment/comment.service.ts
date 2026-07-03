@@ -1,18 +1,10 @@
 import { Injectable } from '@nestjs/common';
-
-export interface CommentIssue {
-  file: string;
-  snippet: string;
-  description: string;
-  reason: string;
-  criticality: 'high' | 'medium' | 'low';
-  rule: string;
-}
+import { ReviewIssue } from '../analysis/review-issue.types';
 
 export interface CommentData {
   score: number;
   prTitle: string;
-  issues: CommentIssue[];
+  issues: ReviewIssue[];
 }
 
 @Injectable()
@@ -32,11 +24,18 @@ export class CommentService {
   formatMarkdown(data: CommentData): string {
     const { score, issues } = data;
     const indicator = score >= 80 ? '✅' : score >= 50 ? '⚠️' : '❌';
+    const knownDebtIssues = issues.filter((issue) => issue.baselineStatus === 'known_debt');
+    const scoredIssues = issues.filter(
+      (issue) => !issue.advisory && issue.baselineStatus !== 'known_debt',
+    );
+    const advisoryIssues = issues.filter(
+      (issue) => issue.advisory && issue.baselineStatus !== 'known_debt',
+    );
 
     const sections: string[] = [];
 
     for (const level of ['high', 'medium', 'low'] as const) {
-      const levelIssues = issues.filter((i) => i.criticality === level);
+      const levelIssues = scoredIssues.filter((i) => i.criticality === level);
       if (levelIssues.length === 0) continue;
 
       const icon = this.ICONS[level];
@@ -46,6 +45,51 @@ export class CommentService {
       sections.push('');
 
       for (const issue of levelIssues) {
+        sections.push(`**Arquivo:** \`${issue.file}\``);
+        sections.push(`**Regra:** ${issue.rule}`);
+        if (issue.baselineStatus === 'new') {
+          sections.push('**Status:** Nova neste commit');
+        }
+        if (issue.baselineStatus === 'persistent') {
+          sections.push('**Status:** Persistente');
+        }
+        sections.push(`**Problema:** ${issue.description}`);
+        sections.push(`**Motivo:** ${issue.reason}`);
+        if (issue.snippet) {
+          sections.push('**Trecho:**');
+          sections.push('```');
+          sections.push(issue.snippet);
+          sections.push('```');
+        }
+        sections.push('');
+      }
+    }
+
+    if (knownDebtIssues.length > 0) {
+      sections.push(`### 🧱 Known Debt (${knownDebtIssues.length} sem impacto na nota)`);
+      sections.push('');
+
+      for (const issue of knownDebtIssues) {
+        sections.push(`**Arquivo:** \`${issue.file}\``);
+        sections.push(`**Regra:** ${issue.rule}`);
+        sections.push('**Status:** Preexistente / descoberto agora');
+        sections.push(`**Problema:** ${issue.description}`);
+        sections.push(`**Motivo:** ${issue.reason}`);
+        if (issue.snippet) {
+          sections.push('**Trecho:**');
+          sections.push('```');
+          sections.push(issue.snippet);
+          sections.push('```');
+        }
+        sections.push('');
+      }
+    }
+
+    if (advisoryIssues.length > 0) {
+      sections.push(`### ℹ️ Observações Adicionais (${advisoryIssues.length} sem impacto na nota)`);
+      sections.push('');
+
+      for (const issue of advisoryIssues) {
         sections.push(`**Arquivo:** \`${issue.file}\``);
         sections.push(`**Regra:** ${issue.rule}`);
         sections.push(`**Problema:** ${issue.description}`);
@@ -61,9 +105,11 @@ export class CommentService {
     }
 
     const noIssuesMessage =
-      issues.length === 0
+      scoredIssues.length === 0 && advisoryIssues.length === 0 && knownDebtIssues.length === 0
         ? '\n\n> ✅ Nenhum problema encontrado. Excelente trabalho!\n'
-        : '';
+        : scoredIssues.length === 0
+          ? '\n\n> ✅ Nenhum problema com impacto na nota foi encontrado.\n'
+          : '';
 
     return [
       `## 🤖 CodeReviewer — Análise Automática`,

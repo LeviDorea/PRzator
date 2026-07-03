@@ -45,10 +45,11 @@ describe('SharedFilesService', () => {
       const svc = makeService();
 
       const files = [{ filename: 'src/app.ts', patch: `import { x } from './utils';` }];
-      const result = await svc.fetchSharedFilesContext('org', 'repo', 1, files, 'typescript');
+      const result = await svc.fetchSharedFilesContext('org', 'repo', 1, files);
 
       expect(mockGithub.getFileContent).toHaveBeenCalled();
       expect(result).toContain('export const x = 1;');
+      expect(result).toContain('Context only. Do not report standalone issues for this file.');
     });
 
     it('should skip files that fail to fetch', async () => {
@@ -56,16 +57,30 @@ describe('SharedFilesService', () => {
       const svc = makeService();
 
       const files = [{ filename: 'src/app.ts', patch: `import { x } from './missing';` }];
-      const result = await svc.fetchSharedFilesContext('org', 'repo', 1, files, 'typescript');
+      const result = await svc.fetchSharedFilesContext('org', 'repo', 1, files);
       expect(result).toBe('');
     });
 
     it('should return empty string when no relative imports found', async () => {
       const svc = makeService();
       const files = [{ filename: 'src/app.ts', patch: `import { Injectable } from '@nestjs/common';` }];
-      const result = await svc.fetchSharedFilesContext('org', 'repo', 1, files, 'typescript');
+      const result = await svc.fetchSharedFilesContext('org', 'repo', 1, files);
       expect(result).toBe('');
       expect(mockGithub.getFileContent).not.toHaveBeenCalled();
+    });
+
+    it('should detect language per file and skip unsupported extensions', async () => {
+      mockGithub.getFileContent.mockResolvedValue('export const helper = true;');
+      const svc = makeService();
+      const files = [
+        { filename: 'src/app.ts', patch: `import { helper } from './helper';` },
+        { filename: 'assets/logo.svg', patch: `<svg></svg>` },
+      ];
+
+      const result = await svc.fetchSharedFilesContext('org', 'repo', 1, files);
+
+      expect(result).toContain('export const helper = true;');
+      expect(mockGithub.getFileContent).toHaveBeenCalledTimes(1);
     });
   });
 });

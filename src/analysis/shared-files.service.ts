@@ -1,5 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { GithubService } from '../github/github.service';
+import {
+  detectLanguageFromFilename,
+  normalizePath,
+} from '../common/utils/file-language.util';
 
 const IMPORT_PATTERNS: Record<string, RegExp[]> = {
   typescript: [
@@ -45,12 +49,16 @@ export class SharedFilesService {
     repo: string,
     installationId: number,
     changedFiles: Array<{ filename: string; patch: string }>,
-    primaryLanguage: string,
   ): Promise<string> {
     const sharedPaths = new Set<string>();
 
     for (const file of changedFiles) {
-      const imports = this.extractRelativeImports(file.patch, primaryLanguage);
+      const language = detectLanguageFromFilename(file.filename);
+      if (!language) {
+        continue;
+      }
+
+      const imports = this.extractRelativeImports(file.patch, language);
       for (const imp of imports) {
         const resolved = this.resolveImportPath(file.filename, imp);
         if (resolved) sharedPaths.add(resolved);
@@ -62,7 +70,9 @@ export class SharedFilesService {
       try {
         const content = await this.github.getFileContent(owner, repo, path, installationId);
         if (content) {
-          contents.push(`// File: ${path}\n${content}`);
+          contents.push(
+            `// Context only. Do not report standalone issues for this file.\n// File: ${path}\n${content}`,
+          );
         }
       } catch (e) {
         this.logger.warn(`Could not fetch shared file: ${path}`);
@@ -73,7 +83,7 @@ export class SharedFilesService {
   }
 
   private resolveImportPath(fromFile: string, importPath: string): string | null {
-    const parts = fromFile.split('/');
+    const parts = normalizePath(fromFile).split('/');
     parts.pop();
     const resolved = [...parts, ...importPath.split('/')].reduce(
       (acc: string[], part) => {

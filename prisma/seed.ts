@@ -5,39 +5,135 @@ const prisma = new PrismaClient();
 
 const DEFAULT_RULES = [
   {
-    title: 'Segurança',
+    title: 'Secret Exposure',
     description:
-      'Verificar exposição de segredos, injeção de código, OWASP Top 10 e outras vulnerabilidades de segurança.',
+      'A hardcoded secret, token, password, or private key was added directly in source code. ' +
+      'Secrets must be read from environment variables or a secrets manager. ' +
+      'Bad: `const apiKey = "sk-abc123"`. Good: `const apiKey = process.env.API_KEY`.',
     criticality: Criticality.high,
     isDefault: true,
   },
   {
-    title: 'Ambiguidade',
+    title: 'SQL Injection Risk',
     description:
-      'Identificar nomes genéricos, lógica confusa, ausência de tipagem adequada e código de difícil compreensão.',
-    criticality: Criticality.medium,
-    isDefault: true,
-  },
-  {
-    title: 'Duplicidade de Código',
-    description:
-      'Detectar violações do princípio DRY (Do not Repeat Yourself), lógica duplicada e oportunidades de reuso.',
-    criticality: Criticality.medium,
-    isDefault: true,
-  },
-  {
-    title: 'Arquitetura e SOLID',
-    description:
-      'Verificar aderência aos princípios SOLID (SRP, OCP, LSP, ISP, DIP), separação de responsabilidades em controllers, services e repositories.',
+      'User-controlled input is concatenated directly into a raw SQL query without parameterization. ' +
+      'Use parameterized queries or the ORM query builder instead. ' +
+      'Bad: `"SELECT * FROM users WHERE id = " + userId`. ' +
+      'Good: `db.query("SELECT * FROM users WHERE id = ?", [userId])`.',
     criticality: Criticality.high,
     isDefault: true,
   },
   {
-    title: 'Boas Práticas',
+    title: 'Business Logic Outside Model Layer',
     description:
-      'Avaliar tratamento de erros, logs, nomenclatura de variáveis/funções, estrutura de código e convenções da linguagem.',
-    criticality: Criticality.low,
+      'A conditional, calculation, or status transition that belongs to the domain was added inside a controller, ' +
+      'route handler, or view instead of a model or service. ' +
+      'Controllers should orchestrate request/response flow and delegate domain decisions. ' +
+      'Report this issue, cite the rule, and state which model or service should own the logic.',
+    criticality: Criticality.high,
     isDefault: true,
+    fileGlobs: [
+      'app/Controller/**/*.php',
+      'src/Controller/**/*.php',
+      'app/Http/Controllers/**/*.php',
+      '**/routes/**/*.php',
+      'src/**/*controller*',
+      'src/**/*Controller*',
+    ],
+  },
+  {
+    title: 'Duplicated Database Query',
+    description:
+      'A database query was added that duplicates an existing model method or performs the same lookup already ' +
+      'present elsewhere in the codebase. Reuse or extend the existing method instead of adding a new ad hoc query. ' +
+      'Report only when the duplication is visible within the diff or its immediate context.',
+    criticality: Criticality.medium,
+    isDefault: true,
+    fileGlobs: [
+      '**/*.php',
+      '**/*.py',
+      '**/*.ts',
+    ],
+  },
+  {
+    title: 'N+1 Query Pattern',
+    description:
+      'A database query is executed inside a loop, causing one query per iteration instead of a single batched query. ' +
+      'Bad: `for (const id of ids) { await db.find(id) }`. ' +
+      'Good: `await db.findMany({ where: { id: { in: ids } } })`.',
+    criticality: Criticality.medium,
+    isDefault: true,
+    fileGlobs: [
+      '**/*.php',
+      '**/*.py',
+      '**/*.ts',
+    ],
+  },
+  {
+    title: 'CakePHP 2 File/Class Naming Mismatch',
+    description:
+      'In CakePHP 2, the filename must exactly match the class name including case. A mismatch causes silent load failures. ' +
+      'Bad: file `emailSender.php` containing `class EmailSender`. ' +
+      'Good: file `EmailSender.php` containing `class EmailSender`.',
+    criticality: Criticality.high,
+    isDefault: true,
+    fileGlobs: [
+      'app/Controller/**/*.php',
+      'app/Model/**/*.php',
+      'app/Lib/**/*.php',
+      'app/Controller/Component/**/*.php',
+    ],
+  },
+  {
+    title: 'CakePHP 2 Undeclared $uses or $components',
+    description:
+      'A Model or Component is used inside a CakePHP 2 controller without being declared in $uses or $components. ' +
+      'This causes a fatal error at runtime. ' +
+      'Bad: calling `$this->Payment->save()` without `public $uses = ["Payment"]`. ' +
+      'Good: declare every Model in `$uses` and every Component in `$components` before using them.',
+    criticality: Criticality.high,
+    isDefault: true,
+    fileGlobs: [
+      'app/Controller/**/*.php',
+    ],
+  },
+  {
+    title: 'Mautic array_filter Prohibition',
+    description:
+      'array_filter() must never be used on Mautic contact payloads. It silently removes falsy values (0, false, "") ' +
+      'from the payload, causing fields to be unset on the contact instead of updated. ' +
+      'Remove any array_filter() call that wraps or processes data sent to Mautic.',
+    criticality: Criticality.high,
+    isDefault: true,
+    fileGlobs: [
+      '**/*.php',
+    ],
+  },
+  {
+    title: 'planos.valor Must Store Monthly Equivalent Only',
+    description:
+      'The planos.valor column stores only the monthly equivalent value, never the total for the billing cycle. ' +
+      'Any code that writes a quarterly, semi-annual, or annual total directly to planos.valor is incorrect. ' +
+      'Convert to the monthly equivalent before persisting.',
+    criticality: Criticality.high,
+    isDefault: true,
+    fileGlobs: [
+      '**/*.php',
+      '**/*.py',
+    ],
+  },
+  {
+    title: 'planos Table Requires Raw SQL for ALTER',
+    description:
+      'The planos table contains legacy zero-date values that cause Phinx schema builder methods to fail silently or error. ' +
+      'Any migration that alters the planos table must use raw SQL via $this->execute() instead of Phinx builder methods ' +
+      'such as changeColumn() or addColumn().',
+    criticality: Criticality.high,
+    isDefault: true,
+    fileGlobs: [
+      '**/migrations/**/*.php',
+      '**/Migrations/**/*.php',
+    ],
   },
 ];
 

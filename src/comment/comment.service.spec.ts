@@ -17,6 +17,32 @@ const LOW_ISSUE = {
   criticality: 'low' as const,
   rule: 'Boas Práticas',
 };
+const ADVISORY_ISSUE = {
+  file: 'src/docs.md',
+  snippet: '',
+  description: 'Extra documentation suggestion',
+  reason: 'Outside the per-run cap',
+  criticality: 'low' as const,
+  rule: 'Boas Práticas',
+  advisory: true,
+};
+const KNOWN_DEBT_ISSUE = {
+  file: 'src/legacy.ts',
+  snippet: 'legacyProblem()',
+  description: 'Legacy issue',
+  reason: 'Pre-existing debt',
+  criticality: 'medium' as const,
+  rule: 'Boas Práticas',
+  baselineStatus: 'known_debt' as const,
+};
+const PERSISTENT_ISSUE = {
+  ...HIGH_ISSUE,
+  baselineStatus: 'persistent' as const,
+};
+const NEW_ISSUE = {
+  ...LOW_ISSUE,
+  baselineStatus: 'new' as const,
+};
 
 describe('CommentService', () => {
   const svc = new CommentService();
@@ -69,6 +95,44 @@ describe('CommentService', () => {
     it('should not include code block when snippet is empty', () => {
       const result = svc.formatMarkdown({ score: 99, prTitle: 'PR', issues: [LOW_ISSUE] });
       expect(result).toContain('Missing error handling');
+    });
+
+    it('should render advisory issues in a separate section without affecting the score section', () => {
+      const result = svc.formatMarkdown({
+        score: 90,
+        prTitle: 'PR',
+        issues: [PERSISTENT_ISSUE, ADVISORY_ISSUE],
+      });
+
+      expect(result).toContain('Hardcoded secret');
+      expect(result).toContain('Persistente');
+      expect(result).toContain('Observações Adicionais');
+      expect(result).toContain('Extra documentation suggestion');
+      expect(result).toContain('sem impacto na nota');
+    });
+
+    it('should not say no issues found when only advisories exist', () => {
+      const result = svc.formatMarkdown({
+        score: 100,
+        prTitle: 'PR',
+        issues: [ADVISORY_ISSUE],
+      });
+
+      expect(result).toContain('Nenhum problema com impacto na nota foi encontrado');
+      expect(result).not.toContain('Nenhum problema encontrado. Excelente trabalho!');
+    });
+
+    it('should render known debt in a separate section outside the scored issues', () => {
+      const result = svc.formatMarkdown({
+        score: 90,
+        prTitle: 'PR',
+        issues: [NEW_ISSUE, KNOWN_DEBT_ISSUE],
+      });
+
+      expect(result).toContain('Nova neste commit');
+      expect(result).toContain('Known Debt');
+      expect(result).toContain('Preexistente / descoberto agora');
+      expect(result).toContain('Legacy issue');
     });
   });
 

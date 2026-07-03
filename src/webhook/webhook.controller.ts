@@ -4,8 +4,8 @@ import {
   HttpCode,
   Post,
   Req,
-  RawBodyRequest,
 } from '@nestjs/common';
+import type { RawBodyRequest } from '@nestjs/common';
 import type { Request } from 'express';
 import { WebhookService } from './webhook.service';
 
@@ -21,7 +21,7 @@ export class WebhookController {
     @Headers('x-github-event') event: string,
   ) {
     this.webhookService.validateSignature(req.rawBody!, signature);
-    await this.webhookService.handlePullRequestEvent(event, req.body);
+    await this.webhookService.handleEvent(event, req.body);
     return { ok: true };
   }
 }

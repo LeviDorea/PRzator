@@ -1,98 +1,109 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# CodeReviewer
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Bot de **revisão automática de Pull Requests** no GitHub. Quando um PR é aberto ou atualizado, o sistema analisa o código alterado usando IA (LLM), atribui uma nota e publica um comentário no próprio PR com os problemas encontrados, organizados por criticidade.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## Stack
 
-## Description
+- **NestJS + TypeScript** — backend modular, organizado por domínio.
+- **Prisma + PostgreSQL** — persistência (repositórios, regras, análises, configuração de pontuação).
+- **GitHub App + Octokit** — integração com o GitHub via webhooks e API.
+- **LangChain + OpenAI (`gpt-4o`)** — motor de análise do código (saída estruturada validada com **Zod**).
+- **Arquitetura orientada a eventos** (`@nestjs/event-emitter`) — desacopla as etapas do pipeline.
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+## Como funciona (visão geral)
 
-## Project setup
+```
+Dev abre/atualiza PR no GitHub
+        │  (webhook pull_request)
+        ▼
+WebhookService ── valida assinatura HMAC SHA-256 ── identifica o repo
+        │  (emite evento "analysis.requested")
+        ▼
+AnalysisService (pipeline)
+   1. Busca contexto do PR + arquivos alterados (diff) + linguagens via GitHub API
+   2. Carrega regras ativas do repositório (banco)
+   3. Coleta contexto de arquivos relacionados/importados (SharedFilesService)
+   4. Envia tudo para o LLM analisar (LlmService)
+   5. Calcula a nota (ScoringService)
+   6. Salva a análise e emite "analysis.completed"
+        │
+        ▼
+CommentService formata Markdown ── GithubService publica o comentário no PR
+```
+
+Diagrama visual: [CodeReviewer — Fluxo de Análise de PR (FigJam)](https://www.figma.com/board/eSCaywkjIjoce79H3CzSnr)
+
+## Módulos principais
+
+- **`webhook/`** — recebe eventos do GitHub, valida a assinatura HMAC e dispara o pipeline.
+- **`github/`** — wrapper da API do GitHub (PR, diff, conteúdo de arquivos, linguagens, comentários) com **retry e backoff exponencial**.
+- **`analysis/`** — orquestra o pipeline: `analysis.service`, `llm.service`, `diff.service`, `shared-files.service`, `scoring.service`.
+- **`rules/`** — CRUD de regras de revisão (regras padrão, globais e específicas por repositório).
+- **`scoring-config/`** — pesos da pontuação por criticidade.
+- **`comment/`** — formata o comentário em Markdown (PT-BR, com indicadores 🔴🟡🟢).
+- **`repositories/`** — registro dos repositórios e webhooks.
+
+## Regras de revisão
+
+As regras ficam no banco (model `Rule`) e são combinadas por repositório em `RulesService.getActiveRulesForRepo`:
+
+- **Padrão** (`isDefault`) — aplicadas a todos os repositórios e não podem ser editadas/removidas.
+- **Globais customizadas** — sem associação a repositório específico (valem para todos).
+- **Específicas** — associadas a um repositório via `RuleRepository`.
+
+Cada regra tem `title`, `description`, `criticality` (`low`/`medium`/`high`), `fileGlobs` e `targetLanguage`.
+
+## Pontuação
+
+Definida em `ScoringService`: começa em **100** e desconta pesos por criticidade de cada issue (padrão: `high=10`, `medium=4`, `low=1`, configuráveis em `ScoringConfig`). Nunca fica abaixo de 0.
+
+```
+nota = max(0, 100 - Σ peso(criticidade))
+```
+
+## Variáveis de ambiente
+
+| Variável | Descrição |
+|---|---|
+| `DATABASE_URL` | Conexão PostgreSQL (Prisma) |
+| `GITHUB_APP_ID` | ID do GitHub App |
+| `GITHUB_APP_PRIVATE_KEY` | Chave privada do GitHub App |
+| `GITHUB_WEBHOOK_SECRET` | Segredo usado na validação HMAC do webhook |
+| `GITHUB_ORG` | Organização alvo no GitHub |
+| `WEBHOOK_URL` | URL base pública para registro do webhook |
+| `OPENAI_API_KEY` | Chave da API da OpenAI |
+| `OPENAI_MODEL` | Modelo usado (padrão: `gpt-4o`) |
+| `MAX_DIFF_TOKENS` | Limite estimado de tokens por lote do diff (padrão: `12000`) |
+
+## Setup
 
 ```bash
 $ npm install
+$ npx prisma migrate dev     # aplica o schema no banco
+$ npx prisma db seed         # popula regras padrão / config (opcional)
 ```
 
-## Compile and run the project
+## Executar
 
 ```bash
-# development
+# desenvolvimento
 $ npm run start
 
 # watch mode
 $ npm run start:dev
 
-# production mode
+# produção
 $ npm run start:prod
 ```
 
-## Run tests
+## Testes
 
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+$ npm run test         # unitários
+$ npm run test:e2e     # end-to-end
+$ npm run test:cov     # cobertura
 ```
 
-## Deployment
+## Resiliência
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+Todas as chamadas externas (GitHub e OpenAI) usam retry com backoff exponencial. Erros de rate-limit (`429`) e de servidor (`5xx`) são re-tentados automaticamente; erros de autenticação (`401`/`403`) não. Quando a OpenAI rejeita um prompt grande demais, o `LlmService` agora remove o contexto compartilhado e divide o lote em partes menores antes de desistir. Se o pipeline ainda falhar, um comentário de erro é publicado no PR.

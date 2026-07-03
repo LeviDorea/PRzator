@@ -1,8 +1,24 @@
 import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { RulesService } from './rules.service';
 
-const DEFAULT_RULE = { id: 'default-1', title: 'Security', isDefault: true };
-const CUSTOM_RULE = { id: 'custom-1', title: 'Custom', isDefault: false };
+const DEFAULT_RULE = {
+  id: 'default-1',
+  title: 'Security',
+  description: 'Check secrets',
+  criticality: 'high',
+  fileGlobs: [],
+  targetLanguage: null,
+  isDefault: true,
+};
+const CUSTOM_RULE = {
+  id: 'custom-1',
+  title: 'Custom',
+  description: 'Custom review rule',
+  criticality: 'medium',
+  fileGlobs: [],
+  targetLanguage: null,
+  isDefault: false,
+};
 
 const mockPrisma = {
   rule: {
@@ -89,10 +105,28 @@ describe('RulesService', () => {
   });
 
   describe('getActiveRulesForRepo', () => {
-    it('should return default + global custom + repo-specific rules', async () => {
-      const defaultRules = [{ id: 'd1', isDefault: true }];
-      const globalCustom = [{ id: 'g1', isDefault: false }];
-      const repoSpecific = [{ id: 'r1', isDefault: false }];
+    it('should return applicable default + global custom + repo-specific rules per file', async () => {
+      const defaultRules = [
+        { ...DEFAULT_RULE, id: 'd1', title: 'All files' },
+      ];
+      const globalCustom = [
+        {
+          ...CUSTOM_RULE,
+          id: 'g1',
+          title: 'TypeScript only',
+          fileGlobs: ['src/**/*.ts'],
+          targetLanguage: 'TypeScript',
+        },
+      ];
+      const repoSpecific = [
+        {
+          ...CUSTOM_RULE,
+          id: 'r1',
+          title: 'Python only',
+          fileGlobs: ['scripts/**/*.py'],
+          targetLanguage: 'python',
+        },
+      ];
 
       mockPrisma.rule.findMany
         .mockResolvedValueOnce(defaultRules)
@@ -100,23 +134,222 @@ describe('RulesService', () => {
         .mockResolvedValueOnce(repoSpecific);
 
       const svc = makeService();
-      const result = await svc.getActiveRulesForRepo('repo-x');
+      const result = await svc.getActiveRulesForRepo('repo-x', [
+        { filename: 'src/app/service.ts' },
+        { filename: 'scripts/job/run.py' },
+      ]);
 
-      expect(result).toHaveLength(3);
-      expect(result).toEqual([...defaultRules, ...globalCustom, ...repoSpecific]);
+      expect(result).toEqual([
+        {
+          filename: 'src/app/service.ts',
+          language: 'typescript',
+          rules: [
+            {
+              title: 'All files',
+              description: 'Check secrets',
+              criticality: 'high',
+            },
+            {
+              title: 'TypeScript only',
+              description: 'Custom review rule',
+              criticality: 'medium',
+            },
+          ],
+        },
+        {
+          filename: 'scripts/job/run.py',
+          language: 'python',
+          rules: [
+            {
+              title: 'All files',
+              description: 'Check secrets',
+              criticality: 'high',
+            },
+            {
+              title: 'Python only',
+              description: 'Custom review rule',
+              criticality: 'medium',
+            },
+          ],
+        },
+      ]);
     });
 
-    it('should not include custom rules associated to a different repo', async () => {
+    it('should exclude rules whose glob or language does not match the file', async () => {
       mockPrisma.rule.findMany
         .mockResolvedValueOnce([DEFAULT_RULE])
+        .mockResolvedValueOnce([
+          {
+            ...CUSTOM_RULE,
+            id: 'glob-miss',
+            title: 'Only test files',
+            fileGlobs: ['**/*.spec.ts'],
+            targetLanguage: 'typescript',
+          },
+        ])
+        .mockResolvedValueOnce([
+          {
+            ...CUSTOM_RULE,
+            id: 'lang-miss',
+            title: 'Python architecture',
+            fileGlobs: ['src/**/*.ts'],
+            targetLanguage: 'python',
+          },
+        ]);
+
+      const svc = makeService();
+      const result = await svc.getActiveRulesForRepo('repo-y', [
+        { filename: 'src/main.ts' },
+      ]);
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toEqual({
+        filename: 'src/main.ts',
+        language: 'typescript',
+        rules: [
+          {
+            title: 'Security',
+            description: 'Check secrets',
+            criticality: 'high',
+          },
+        ],
+      });
+    });
+
+    it('should match php-prefixed CakePHP paths against app-based globs', async () => {
+      mockPrisma.rule.findMany
+        .mockResolvedValueOnce([
+          {
+            ...DEFAULT_RULE,
+            id: 'cake-rule',
+            title: 'Cake controller architecture',
+            description: 'Business logic should stay out of controllers',
+            fileGlobs: ['app/Controller/**/*.php'],
+          },
+        ])
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([]);
 
       const svc = makeService();
-      const result = await svc.getActiveRulesForRepo('repo-y');
+      const result = await svc.getActiveRulesForRepo('repo-cake', [
+        { filename: 'php/app/Controller/PedidosController.php' },
+      ]);
 
-      expect(result).toHaveLength(1);
-      expect(result[0].id).toBe('default-1');
+      expect(result).toEqual([
+        {
+          filename: 'php/app/Controller/PedidosController.php',
+          language: 'php',
+          rules: [
+            {
+              title: 'Cake controller architecture',
+              description: 'Business logic should stay out of controllers',
+              criticality: 'high',
+            },
+          ],
+        },
+      ]);
+    });
+
+    it('should allow mixed and configuration rules when the file glob matches', async () => {
+      mockPrisma.rule.findMany
+        .mockResolvedValueOnce([
+          {
+            ...DEFAULT_RULE,
+            id: 'mixed-rule',
+            title: 'Mixed infra rule',
+            description: 'Validate mixed language config files',
+            fileGlobs: ['Dockerfile', 'app/**/*.py'],
+            targetLanguage: 'mixed',
+          },
+          {
+            ...DEFAULT_RULE,
+            id: 'config-rule',
+            title: 'Configuration contract',
+            description: 'Validate config entrypoints',
+            fileGlobs: ['next.config.ts', '.env.example'],
+            targetLanguage: 'configuration',
+          },
+        ])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([]);
+
+      const svc = makeService();
+      const result = await svc.getActiveRulesForRepo('repo-config', [
+        { filename: 'Dockerfile' },
+        { filename: 'next.config.ts' },
+        { filename: '.env.example' },
+      ]);
+
+      expect(result).toEqual([
+        {
+          filename: 'Dockerfile',
+          language: 'dockerfile',
+          rules: [
+            {
+              title: 'Mixed infra rule',
+              description: 'Validate mixed language config files',
+              criticality: 'high',
+            },
+          ],
+        },
+        {
+          filename: 'next.config.ts',
+          language: 'typescript',
+          rules: [
+            {
+              title: 'Configuration contract',
+              description: 'Validate config entrypoints',
+              criticality: 'high',
+            },
+          ],
+        },
+        {
+          filename: '.env.example',
+          language: 'env',
+          rules: [
+            {
+              title: 'Configuration contract',
+              description: 'Validate config entrypoints',
+              criticality: 'high',
+            },
+          ],
+        },
+      ]);
+    });
+
+    it('should support brace-expanded file globs', async () => {
+      mockPrisma.rule.findMany
+        .mockResolvedValueOnce([
+          {
+            ...DEFAULT_RULE,
+            id: 'brace-rule',
+            title: 'TS or TSX',
+            description: 'Matches both ts and tsx files',
+            fileGlobs: ['app/**/*.{ts,tsx}'],
+            targetLanguage: 'typescript',
+          },
+        ])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([]);
+
+      const svc = makeService();
+      const result = await svc.getActiveRulesForRepo('repo-braces', [
+        { filename: 'app/page.tsx' },
+      ]);
+
+      expect(result).toEqual([
+        {
+          filename: 'app/page.tsx',
+          language: 'typescript',
+          rules: [
+            {
+              title: 'TS or TSX',
+              description: 'Matches both ts and tsx files',
+              criticality: 'high',
+            },
+          ],
+        },
+      ]);
     });
   });
 });

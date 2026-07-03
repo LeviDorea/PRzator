@@ -163,6 +163,30 @@ export class GithubService {
     }));
   }
 
+  async getCompareFiles(
+    owner: string,
+    repo: string,
+    baseSha: string,
+    headSha: string,
+    installationId: number,
+  ): Promise<Array<{ filename: string; patch: string; status: string }>> {
+    const octokit = await this.getInstallationOctokit(installationId);
+    const { data } = await withRetry<{ data: any }>(
+      () =>
+        (octokit as any).request(
+          'GET /repos/{owner}/{repo}/compare/{basehead}',
+          { owner, repo, basehead: `${baseSha}...${headSha}` },
+        ),
+      this.githubRetryOpts,
+    );
+
+    return ((data as any).files ?? []).map((f: any) => ({
+      filename: f.filename,
+      patch: f.patch ?? '',
+      status: f.status,
+    }));
+  }
+
   async getFileContent(
     owner: string,
     repo: string,

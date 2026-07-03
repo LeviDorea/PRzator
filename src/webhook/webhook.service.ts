@@ -45,9 +45,79 @@ export class WebhookService {
     }
   }
 
-  async handlePullRequestEvent(eventType: string, body: any): Promise<void> {
-    if (eventType !== 'pull_request') return;
+  async handleEvent(eventType: string, body: any): Promise<void> {
+    switch (eventType) {
+      case 'installation':
+        await this.handleInstallationEvent(body);
+        break;
+      case 'installation_repositories':
+        await this.handleInstallationRepositoriesEvent(body);
+        break;
+      case 'pull_request':
+        await this.handlePullRequestEvent(body);
+        break;
+      default:
+        break;
+    }
+  }
 
+  private async handleInstallationEvent(body: any): Promise<void> {
+    const { action, installation, repositories } = body;
+    const installationId: number = installation?.id;
+    const owner: string = installation?.account?.login;
+
+    if (action === 'created' && Array.isArray(repositories)) {
+      for (const r of repositories) {
+        await this.upsertRepository(r, installationId, owner);
+      }
+      this.logger.log(`Installation created for ${owner}: registered ${repositories.length} repo(s)`);
+    }
+
+    if (action === 'deleted') {
+      await this.prisma.repository.deleteMany({
+        where: { installationId },
+      });
+      this.logger.log(`Installation deleted for ${owner}: removed repos with installationId ${installationId}`);
+    }
+  }
+
+  private async handleInstallationRepositoriesEvent(body: any): Promise<void> {
+    const { action, installation, repositories_added, repositories_removed } = body;
+    const installationId: number = installation?.id;
+    const owner: string = installation?.account?.login;
+
+    if (action === 'added' && Array.isArray(repositories_added)) {
+      for (const r of repositories_added) {
+        await this.upsertRepository(r, installationId, owner);
+      }
+      this.logger.log(`Added ${repositories_added.length} repo(s) for installation ${installationId}`);
+    }
+
+    if (action === 'removed' && Array.isArray(repositories_removed)) {
+      const fullNames = repositories_removed.map((r: any) => r.full_name);
+      await this.prisma.repository.deleteMany({
+        where: { fullName: { in: fullNames } },
+      });
+      this.logger.log(`Removed repos: ${fullNames.join(', ')}`);
+    }
+  }
+
+  private async upsertRepository(r: any, installationId: number, owner: string): Promise<void> {
+    const [, name] = (r.full_name as string).split('/');
+    await this.prisma.repository.upsert({
+      where: { fullName: r.full_name },
+      update: { installationId },
+      create: {
+        githubId: r.id,
+        owner,
+        name,
+        fullName: r.full_name,
+        installationId,
+      },
+    });
+  }
+
+  private async handlePullRequestEvent(body: any): Promise<void> {
     const { action, number, pull_request, repository, installation } = body;
 
     if (!['opened', 'synchronize', 'reopened'].includes(action)) return;

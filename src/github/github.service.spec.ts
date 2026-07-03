@@ -93,6 +93,27 @@ describe('GithubService', () => {
     });
   });
 
+  describe('getCompareFiles', () => {
+    it('should return files from the compare endpoint with patch and status', async () => {
+      const { svc, mockRequest } = buildService();
+      mockRequest.mockResolvedValue({
+        data: {
+          files: [{ filename: 'src/app.ts', patch: '@@ -1 +1 @@ fix', status: 'modified' }],
+        },
+      });
+
+      const result = await svc.getCompareFiles('org', 'repo', 'base123', 'head456', INSTALLATION_ID);
+
+      expect(result).toEqual([
+        { filename: 'src/app.ts', patch: '@@ -1 +1 @@ fix', status: 'modified' },
+      ]);
+      expect(mockRequest).toHaveBeenCalledWith(
+        'GET /repos/{owner}/{repo}/compare/{basehead}',
+        expect.objectContaining({ basehead: 'base123...head456' }),
+      );
+    });
+  });
+
   describe('getFileContent', () => {
     it('should decode base64 content', async () => {
       const { svc, mockRequest } = buildService();
