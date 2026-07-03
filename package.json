@@ -20,7 +20,12 @@
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "rules:prepare:approved": "ts-node --transpile-only -r tsconfig-paths/register scripts/approved-rules.ts prepare",
     "rules:dry-run:approved": "ts-node --transpile-only -r tsconfig-paths/register scripts/approved-rules.ts dry-run",
-    "rules:import:approved": "ts-node --transpile-only -r tsconfig-paths/register scripts/approved-rules.ts import"
+    "rules:import:approved": "ts-node --transpile-only -r tsconfig-paths/register scripts/approved-rules.ts import",
+    "webapp:install": "npm --prefix webapp install",
+    "webapp:dev": "npm --prefix webapp run dev",
+    "webapp:build": "npm --prefix webapp run build",
+    "webapp:start": "npm --prefix webapp run start",
+    "webapp:lint": "npm --prefix webapp run lint"
   },
   "dependencies": {
     "@langchain/openai": "^1.4.7",

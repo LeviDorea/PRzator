@@ -9,6 +9,12 @@ Bot de **revisão automática de Pull Requests** no GitHub. Quando um PR é aber
 - **GitHub App + Octokit** — integração com o GitHub via webhooks e API.
 - **LangChain + OpenAI (`gpt-4o`)** — motor de análise do código (saída estruturada validada com **Zod**).
 - **Arquitetura orientada a eventos** (`@nestjs/event-emitter`) — desacopla as etapas do pipeline.
+- **Next.js 16 + React 19** em `webapp/` — dashboard web para análises, regras, repositórios e login via Basic Auth da API.
+
+## Estrutura
+
+- **raiz do repo** — backend NestJS, Prisma, GitHub App, pipeline de análise e scripts operacionais.
+- **`webapp/`** — frontend Next.js do CodeReviewer.
 
 ## Como funciona (visão geral)
 
@@ -81,6 +87,7 @@ nota = max(0, 100 - Σ peso(criticidade))
 $ npm install
 $ npx prisma migrate dev     # aplica o schema no banco
 $ npx prisma db seed         # popula regras padrão / config (opcional)
+$ npm run webapp:install     # instala dependências do dashboard Next.js
 ```
 
 ## Executar
@@ -94,6 +101,21 @@ $ npm run start:dev
 
 # produção
 $ npm run start:prod
+```
+
+### Dashboard Web
+
+```bash
+$ npm run webapp:dev
+```
+
+O frontend fica em `webapp/` e, por padrão, espera a API do backend em `http://localhost:3000`. Quando necessário, configure `NEXT_PUBLIC_API_URL` no ambiente do app Next.
+
+Para subir a versão já compilada do frontend:
+
+```bash
+$ npm run webapp:build
+$ npm run webapp:start
 ```
 
 ## Testes
