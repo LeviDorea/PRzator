@@ -1,14 +1,24 @@
 import { createHash } from 'crypto';
 import { normalizePath } from '../common/utils/file-language.util';
-import { ReviewIssue } from './review-issue.types';
+import { GeneralIssue, ReviewIssue } from './review-issue.types';
 
 type IssueKeyInput = Pick<ReviewIssue, 'rule' | 'file' | 'reason' | 'description'>;
+type GeneralIssueKeyInput = Pick<GeneralIssue, 'file' | 'reason' | 'description'>;
 type IssueSnippetInput = Pick<ReviewIssue, 'file' | 'snippet'>;
 type DiffLikeFile = { filename: string; patch: string };
 
 export function buildIssueKey(issue: IssueKeyInput): string {
   const source = [
     normalizeText(issue.rule),
+    normalizeText(issue.file),
+    normalizeText(issue.reason || issue.description),
+  ].join('::');
+
+  return createHash('sha256').update(source).digest('hex');
+}
+
+export function buildGeneralIssueKey(issue: GeneralIssueKeyInput): string {
+  const source = [
     normalizeText(issue.file),
     normalizeText(issue.reason || issue.description),
   ].join('::');
@@ -30,6 +40,15 @@ export function issueMatchesDiff(
   }
 
   return matchesDiffSnippet(issue.snippet, fileIndex);
+}
+
+export function snippetExistsInContent(snippet: string, content: string): boolean {
+  const normalizedSnippet = normalizeCodeSnippet(snippet);
+  if (!normalizedSnippet) {
+    return false;
+  }
+
+  return normalizeCodeSnippet(content).includes(normalizedSnippet);
 }
 
 function normalizeText(value: string): string {
@@ -71,7 +90,7 @@ function buildDiffSnippetIndex(patch: string): string[] {
       continue;
     }
 
-    if (line.startsWith('+') || line.startsWith('-') || line.startsWith(' ')) {
+    if (line.startsWith('+')) {
       currentHunkLines.push(line.slice(1));
     }
   }

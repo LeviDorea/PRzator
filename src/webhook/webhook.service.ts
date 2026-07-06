@@ -139,6 +139,8 @@ export class WebhookService {
       repo: repository.name,
       prNumber: number,
       prTitle: pull_request.title,
+      prBody: pull_request.body ?? '',
+      baseSha: pull_request.base.sha,
       commitSha: pull_request.head.sha,
       installationId: installation?.id ?? repo.installationId,
       repositoryId: repo.id,

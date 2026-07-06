@@ -45,9 +45,9 @@ describe('SharedFilesService', () => {
       const svc = makeService();
 
       const files = [{ filename: 'src/app.ts', patch: `import { x } from './utils';` }];
-      const result = await svc.fetchSharedFilesContext('org', 'repo', 1, files);
+      const result = await svc.fetchSharedFilesContext('org', 'repo', 1, files, 'sha123');
 
-      expect(mockGithub.getFileContent).toHaveBeenCalled();
+      expect(mockGithub.getFileContent).toHaveBeenCalledWith('org', 'repo', 'src/utils', 1, 'sha123');
       expect(result).toContain('export const x = 1;');
       expect(result).toContain('Context only. Do not report standalone issues for this file.');
     });
@@ -57,14 +57,14 @@ describe('SharedFilesService', () => {
       const svc = makeService();
 
       const files = [{ filename: 'src/app.ts', patch: `import { x } from './missing';` }];
-      const result = await svc.fetchSharedFilesContext('org', 'repo', 1, files);
+      const result = await svc.fetchSharedFilesContext('org', 'repo', 1, files, 'sha123');
       expect(result).toBe('');
     });
 
     it('should return empty string when no relative imports found', async () => {
       const svc = makeService();
       const files = [{ filename: 'src/app.ts', patch: `import { Injectable } from '@nestjs/common';` }];
-      const result = await svc.fetchSharedFilesContext('org', 'repo', 1, files);
+      const result = await svc.fetchSharedFilesContext('org', 'repo', 1, files, 'sha123');
       expect(result).toBe('');
       expect(mockGithub.getFileContent).not.toHaveBeenCalled();
     });
@@ -77,7 +77,7 @@ describe('SharedFilesService', () => {
         { filename: 'assets/logo.svg', patch: `<svg></svg>` },
       ];
 
-      const result = await svc.fetchSharedFilesContext('org', 'repo', 1, files);
+      const result = await svc.fetchSharedFilesContext('org', 'repo', 1, files, 'sha123');
 
       expect(result).toContain('export const helper = true;');
       expect(mockGithub.getFileContent).toHaveBeenCalledTimes(1);

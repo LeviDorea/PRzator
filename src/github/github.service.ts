@@ -192,6 +192,7 @@ export class GithubService {
     repo: string,
     path: string,
     installationId: number,
+    ref?: string,
   ): Promise<string> {
     const octokit = await this.getInstallationOctokit(installationId);
     const { data } = await withRetry<{ data: any }>(
@@ -200,6 +201,7 @@ export class GithubService {
           owner,
           repo,
           path,
+          ...(ref ? { ref } : {}),
         }),
       this.githubRetryOpts,
     );

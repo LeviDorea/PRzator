@@ -50,11 +50,16 @@ describe('WebhookService', () => {
     });
   });
 
-  describe('handlePullRequestEvent', () => {
+  describe('handleEvent (pull_request)', () => {
     const baseBody = {
       action: 'opened',
       number: 42,
-      pull_request: { title: 'Fix bug', head: { sha: 'abc123' } },
+      pull_request: {
+        title: 'Fix bug',
+        body: 'PR description',
+        head: { sha: 'abc123' },
+        base: { sha: 'base456' },
+      },
       repository: { full_name: 'org/repo', owner: { login: 'org' }, name: 'repo' },
       installation: { id: 99 },
     };
@@ -65,12 +70,14 @@ describe('WebhookService', () => {
         installationId: 99,
       });
       const svc = makeService();
-      await svc.handlePullRequestEvent('pull_request', baseBody);
+      await svc.handleEvent('pull_request', baseBody);
 
       expect(mockEmitter.emit).toHaveBeenCalledWith(
         'analysis.requested',
         expect.objectContaining({
           prNumber: 42,
+          prBody: 'PR description',
+          baseSha: 'base456',
           commitSha: 'abc123',
           repositoryId: 'repo-db-id',
         }),
@@ -79,13 +86,13 @@ describe('WebhookService', () => {
 
     it('should do nothing for non pull_request events', async () => {
       const svc = makeService();
-      await svc.handlePullRequestEvent('push', {});
+      await svc.handleEvent('push', {});
       expect(mockEmitter.emit).not.toHaveBeenCalled();
     });
 
     it('should do nothing for unsupported PR actions', async () => {
       const svc = makeService();
-      await svc.handlePullRequestEvent('pull_request', { ...baseBody, action: 'closed' });
+      await svc.handleEvent('pull_request', { ...baseBody, action: 'closed' });
       expect(mockEmitter.emit).not.toHaveBeenCalled();
     });
 
@@ -93,7 +100,7 @@ describe('WebhookService', () => {
       mockPrisma.repository.findUnique.mockResolvedValue(null);
       const svc = makeService();
       await expect(
-        svc.handlePullRequestEvent('pull_request', baseBody),
+        svc.handleEvent('pull_request', baseBody),
       ).rejects.toThrow(NotFoundException);
       expect(mockEmitter.emit).not.toHaveBeenCalled();
     });

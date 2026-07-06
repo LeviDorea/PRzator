@@ -10,11 +10,13 @@ import { DiffService } from './diff.service';
 import { SharedFilesService } from './shared-files.service';
 import { ScoringService } from './scoring.service';
 import {
+  GeneralIssue,
   ReviewCriticality,
   ReviewIssue,
   ReviewIssueBaselineStatus,
 } from './review-issue.types';
-import { buildIssueKey, issueMatchesDiff } from './review-issue.util';
+import { AnalysisSnapshot } from './analysis-snapshot.types';
+import { buildIssueKey, issueMatchesDiff, snippetExistsInContent } from './review-issue.util';
 import {
   ANALYSIS_COMPLETED,
   ANALYSIS_FAILED,
@@ -45,10 +47,20 @@ export class AnalysisService {
       repo,
       prNumber,
       prTitle,
+      prBody,
+      baseSha,
       commitSha,
       installationId,
       repositoryId,
     } = event;
+
+    const snapshot: AnalysisSnapshot = {
+      owner,
+      repo,
+      installationId,
+      baseSha,
+      headSha: commitSha,
+    };
 
     try {
       const existing = await this.prisma.analysis.findUnique({
@@ -61,26 +73,40 @@ export class AnalysisService {
         return;
       }
 
-      const [previousAnalysis, prContext, prFiles] = await Promise.all([
+      const [previousAnalysis, prFiles] = await Promise.all([
         this.findPreviousAnalysis(repositoryId, prNumber, commitSha),
-        this.github.getPRContext(owner, repo, prNumber, installationId),
-        this.github.getPRFiles(owner, repo, prNumber, installationId),
+        this.github.getCompareFiles(owner, repo, baseSha, commitSha, installationId),
       ]);
 
       const activeRules = await this.rules.getActiveRulesForRepo(repositoryId, prFiles);
 
-      const [sharedContext, agentContext] = await Promise.all([
-        this.sharedFiles.fetchSharedFilesContext(owner, repo, installationId, prFiles),
-        this.fetchAgentContext(owner, repo, installationId),
+      const [sharedContext, agentsMdContent] = await Promise.all([
+        this.sharedFiles.fetchSharedFilesContext(owner, repo, installationId, prFiles, commitSha),
+        this.fetchAgentsMdContent(snapshot),
       ]);
 
       const rawIssues = await this.llm.analyze(
         prTitle,
-        prContext.body,
+        prBody,
         prFiles,
         sharedContext,
         activeRules,
-        agentContext,
+      );
+
+      const liveIssues = await this.verifyIssuesAgainstCurrentFiles(snapshot, rawIssues);
+
+      const previousGeneralIssues = this.parseStoredGeneralIssues(
+        previousAnalysis?.generalIssues,
+      );
+      const generalIssues = await this.runGeneralAnalysisSafely(
+        prTitle,
+        prBody,
+        prFiles,
+        agentsMdContent,
+        previousGeneralIssues,
+        owner,
+        repo,
+        prNumber,
       );
 
       const compareFiles = previousAnalysis
@@ -95,7 +121,7 @@ export class AnalysisService {
 
       const issues = this.applyIssueCaps(
         this.applyBaseline(
-          rawIssues,
+          liveIssues,
           this.parseStoredIssues(previousAnalysis?.issues),
           compareFiles,
         ),
@@ -104,17 +130,29 @@ export class AnalysisService {
       const weights = await this.getWeights();
       const score = this.scoring.calculate(this.getIssuesForScore(issues), weights);
 
-      const analysis = await this.prisma.analysis.create({
-        data: {
-          repositoryId,
-          prNumber,
-          prTitle,
-          commitSha,
-          score,
-          issues: this.serializeIssuesForStorage(issues),
-          published: false,
-        },
-      });
+      let analysis;
+      try {
+        analysis = await this.prisma.analysis.create({
+          data: {
+            repositoryId,
+            prNumber,
+            prTitle,
+            commitSha,
+            score,
+            issues: this.serializeIssuesForStorage(issues),
+            generalIssues: this.serializeGeneralIssuesForStorage(generalIssues),
+            published: false,
+          },
+        });
+      } catch (createErr) {
+        if (this.isDuplicateAnalysisError(createErr)) {
+          this.logger.warn(
+            `Concurrent analysis already persisted for ${owner}/${repo}#${prNumber}@${commitSha}; discarding this duplicate run.`,
+          );
+          return;
+        }
+        throw createErr;
+      }
 
       this.logger.log(`Analysis created: id=${analysis.id}, score=${score}`);
 
@@ -142,34 +180,108 @@ export class AnalysisService {
     }
   }
 
-  private async fetchAgentContext(
+  private isDuplicateAnalysisError(err: unknown): boolean {
+    if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== 'P2002') {
+      return false;
+    }
+
+    const target = (err.meta as { target?: unknown })?.target;
+    if (Array.isArray(target)) {
+      return target.includes('commitSha');
+    }
+    if (typeof target === 'string') {
+      return target.includes('commitSha');
+    }
+    return false;
+  }
+
+  private async runGeneralAnalysisSafely(
+    prTitle: string,
+    prBody: string,
+    prFiles: Array<{ filename: string; patch: string; status: string }>,
+    agentsMdContent: string | undefined,
+    previousGeneralIssues: GeneralIssue[],
     owner: string,
     repo: string,
-    installationId: number,
+    prNumber: number,
+  ): Promise<GeneralIssue[]> {
+    try {
+      return await this.llm.analyzeGeneral(
+        prTitle,
+        prBody,
+        prFiles,
+        agentsMdContent,
+        previousGeneralIssues,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `General-purpose analysis failed for ${owner}/${repo}#${prNumber}, keeping previous general issues unchanged: ${String(err)}`,
+      );
+      return previousGeneralIssues;
+    }
+  }
+
+  private async fetchAgentsMdContent(
+    snapshot: AnalysisSnapshot,
   ): Promise<string | undefined> {
     try {
       const content = await this.github.getFileContent(
-        owner,
-        repo,
+        snapshot.owner,
+        snapshot.repo,
         'AGENTS.md',
-        installationId,
+        snapshot.installationId,
+        snapshot.headSha,
       );
-      if (!content) return undefined;
-
-      const marker = '## Automated Review Rules';
-      const start = content.indexOf(marker);
-      if (start === -1) return undefined;
-
-      const nextSection = content.indexOf('\n## ', start + marker.length);
-      return nextSection === -1
-        ? content.slice(start).trim()
-        : content.slice(start, nextSection).trim();
+      return content?.trim() || undefined;
     } catch (err) {
-      this.logger.warn(
-        `Could not load AGENTS.md automated review rules for ${owner}/${repo}: ${String(err)}`,
-      );
+      this.logger.warn(`Could not load AGENTS.md for ${snapshot.owner}/${snapshot.repo}: ${String(err)}`);
       return undefined;
     }
+  }
+
+  private async verifyIssuesAgainstCurrentFiles(
+    snapshot: AnalysisSnapshot,
+    issues: ReviewIssue[],
+  ): Promise<ReviewIssue[]> {
+    const fileContentCache = new Map<string, string | null>();
+
+    const getContent = async (file: string): Promise<string | null> => {
+      if (fileContentCache.has(file)) {
+        return fileContentCache.get(file) ?? null;
+      }
+      try {
+        const content = await this.github.getFileContent(
+          snapshot.owner,
+          snapshot.repo,
+          file,
+          snapshot.installationId,
+          snapshot.headSha,
+        );
+        fileContentCache.set(file, content);
+        return content;
+      } catch (err) {
+        this.logger.warn(
+          `Could not fetch ${file} at ${snapshot.headSha} to verify issue; keeping it by default: ${String(err)}`,
+        );
+        fileContentCache.set(file, null);
+        return null;
+      }
+    };
+
+    const verified: ReviewIssue[] = [];
+    for (const issue of issues) {
+      const content = await getContent(issue.file);
+      if (content === null || snippetExistsInContent(issue.snippet, content)) {
+        verified.push(issue);
+        continue;
+      }
+
+      this.logger.log(
+        `Dropping stale issue for rule "${issue.rule}" in ${issue.file}: snippet no longer present at ${snapshot.headSha}`,
+      );
+    }
+
+    return verified;
   }
 
   async findByRepository(repositoryId: string) {
@@ -215,6 +327,10 @@ export class AnalysisService {
 
   private parseStoredIssues(storedIssues: unknown): ReviewIssue[] {
     return Array.isArray(storedIssues) ? (storedIssues as ReviewIssue[]) : [];
+  }
+
+  private parseStoredGeneralIssues(storedIssues: unknown): GeneralIssue[] {
+    return Array.isArray(storedIssues) ? (storedIssues as GeneralIssue[]) : [];
   }
 
   private applyBaseline(
@@ -319,6 +435,21 @@ export class AnalysisService {
         ...(issue.advisory !== undefined ? { advisory: issue.advisory } : {}),
       } satisfies Prisma.InputJsonObject;
     });
+
+    return serializedIssues;
+  }
+
+  private serializeGeneralIssuesForStorage(
+    issues: GeneralIssue[],
+  ): Prisma.InputJsonValue {
+    const serializedIssues: Prisma.InputJsonObject[] = issues.map((issue) => ({
+      file: issue.file,
+      snippet: issue.snippet,
+      description: issue.description,
+      reason: issue.reason,
+      criticality: issue.criticality,
+      issueKey: issue.issueKey,
+    }));
 
     return serializedIssues;
   }

@@ -49,6 +49,7 @@ export class SharedFilesService {
     repo: string,
     installationId: number,
     changedFiles: Array<{ filename: string; patch: string }>,
+    ref: string,
   ): Promise<string> {
     const sharedPaths = new Set<string>();
 
@@ -68,7 +69,7 @@ export class SharedFilesService {
     const contents: string[] = [];
     for (const path of sharedPaths) {
       try {
-        const content = await this.github.getFileContent(owner, repo, path, installationId);
+        const content = await this.github.getFileContent(owner, repo, path, installationId, ref);
         if (content) {
           contents.push(
             `// Context only. Do not report standalone issues for this file.\n// File: ${path}\n${content}`,

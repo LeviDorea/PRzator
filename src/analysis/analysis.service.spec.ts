@@ -27,8 +27,6 @@ const mockPrisma = {
 };
 
 const mockGithub = {
-  getPRContext: jest.fn(),
-  getPRFiles: jest.fn(),
   getCompareFiles: jest.fn(),
   getFileContent: jest.fn(),
 };
@@ -39,6 +37,7 @@ const mockRules = {
 
 const mockLlm = {
   analyze: jest.fn(),
+  analyzeGeneral: jest.fn().mockResolvedValue([]),
 };
 
 const mockDiff = {};
@@ -60,6 +59,8 @@ const EVENT: AnalysisRequestedEvent = {
   repo: 'repo',
   prNumber: 1,
   prTitle: 'Fix bug',
+  prBody: 'details',
+  baseSha: 'base456',
   commitSha: 'abc123',
   installationId: 42,
   repositoryId: 'repo-db-id',
@@ -94,14 +95,13 @@ describe('AnalysisService', () => {
       const svc = makeService();
       await svc.runPipeline(EVENT);
 
-      expect(mockGithub.getPRContext).not.toHaveBeenCalled();
+      expect(mockGithub.getCompareFiles).not.toHaveBeenCalled();
       expect(mockEmitter.emit).not.toHaveBeenCalled();
     });
 
     it('should complete full pipeline and emit analysis.completed', async () => {
       mockPrisma.analysis.findUnique.mockResolvedValue(null);
-      mockGithub.getPRContext.mockResolvedValue({ title: 'Fix bug', body: 'details' });
-      mockGithub.getPRFiles.mockResolvedValue([
+      mockGithub.getCompareFiles.mockResolvedValue([
         {
           filename: 'src/app.ts',
           patch: '@@ -1 +1 @@\n+const secret = "hardcoded";',
@@ -111,14 +111,18 @@ describe('AnalysisService', () => {
       mockRules.getActiveRulesForRepo.mockResolvedValue([
         { filename: 'src/app.ts', language: 'typescript', rules: [{ title: 'Security', description: 'Check', criticality: 'high' }] },
       ]);
-      mockGithub.getFileContent.mockResolvedValue(`# Notes
+      mockGithub.getFileContent.mockImplementation((_owner: string, _repo: string, path: string) => {
+        if (path === 'AGENTS.md') {
+          return Promise.resolve(`# Notes
 
-## Automated Review Rules
-- Controllers must not contain business logic.
-
-## Other Section
-- ignore me
+Some repository conventions live here.
 `);
+        }
+        if (path === 'src/app.ts') {
+          return Promise.resolve('const secret = "hardcoded";');
+        }
+        return Promise.resolve(undefined);
+      });
       mockLlm.analyze.mockResolvedValue([
         {
           file: 'src/app.ts',
@@ -147,6 +151,9 @@ describe('AnalysisService', () => {
         }),
       );
 
+      expect(mockGithub.getCompareFiles).toHaveBeenCalledTimes(1);
+      expect(mockGithub.getCompareFiles).toHaveBeenCalledWith('org', 'repo', 'base456', 'abc123', 42);
+
       expect(mockRules.getActiveRulesForRepo).toHaveBeenCalledWith('repo-db-id', [
         {
           filename: 'src/app.ts',
@@ -165,6 +172,7 @@ describe('AnalysisService', () => {
             status: 'modified',
           },
         ],
+        'abc123',
       );
       expect(mockLlm.analyze).toHaveBeenCalledWith(
         'Fix bug',
@@ -184,7 +192,19 @@ describe('AnalysisService', () => {
             rules: [{ title: 'Security', description: 'Check', criticality: 'high' }],
           },
         ],
-        '## Automated Review Rules\n- Controllers must not contain business logic.',
+      );
+      expect(mockLlm.analyzeGeneral).toHaveBeenCalledWith(
+        'Fix bug',
+        'details',
+        [
+          {
+            filename: 'src/app.ts',
+            patch: '@@ -1 +1 @@\n+const secret = "hardcoded";',
+            status: 'modified',
+          },
+        ],
+        '# Notes\n\nSome repository conventions live here.',
+        [],
       );
       expect(mockScoring.calculate).toHaveBeenCalledWith(
         [
@@ -197,7 +217,6 @@ describe('AnalysisService', () => {
         ],
         { high: 10, medium: 4, low: 1 },
       );
-      expect(mockGithub.getCompareFiles).not.toHaveBeenCalled();
 
       expect(mockEmitter.emit).toHaveBeenCalledWith(
         ANALYSIS_COMPLETED,
@@ -207,7 +226,7 @@ describe('AnalysisService', () => {
 
     it('should emit analysis.failed on pipeline error', async () => {
       mockPrisma.analysis.findUnique.mockResolvedValue(null);
-      mockGithub.getPRContext.mockRejectedValue(new Error('GitHub API error'));
+      mockGithub.getCompareFiles.mockRejectedValue(new Error('GitHub API error'));
 
       const svc = makeService();
       await svc.runPipeline(EVENT);
@@ -256,15 +275,26 @@ describe('AnalysisService', () => {
           },
         ],
       });
-      mockGithub.getPRContext.mockResolvedValue({ title: 'Fix bug', body: 'details' });
-      mockGithub.getPRFiles.mockResolvedValue([
-        { filename: 'src/app.ts', patch: '@@ -1 +1 @@\n+persist()', status: 'modified' },
-        { filename: 'src/new.ts', patch: '@@ -1 +1 @@\n+introducedNow()', status: 'modified' },
-        { filename: 'src/legacy.ts', patch: '@@ -1 +1 @@\n+legacyProblem()', status: 'modified' },
-      ]);
-      mockGithub.getCompareFiles.mockResolvedValue([
-        { filename: 'src/new.ts', patch: '@@ -1 +1 @@\n+introducedNow()', status: 'modified' },
-      ]);
+      mockGithub.getCompareFiles.mockImplementation((_owner: string, _repo: string, base: string) => {
+        if (base === 'prev123') {
+          return Promise.resolve([
+            { filename: 'src/new.ts', patch: '@@ -1 +1 @@\n+introducedNow()', status: 'modified' },
+          ]);
+        }
+        return Promise.resolve([
+          { filename: 'src/app.ts', patch: '@@ -1 +1 @@\n+persist()', status: 'modified' },
+          { filename: 'src/new.ts', patch: '@@ -1 +1 @@\n+introducedNow()', status: 'modified' },
+          { filename: 'src/legacy.ts', patch: '@@ -1 +1 @@\n+legacyProblem()', status: 'modified' },
+        ]);
+      });
+      mockGithub.getFileContent.mockImplementation((_owner: string, _repo: string, path: string) => {
+        const contents: Record<string, string> = {
+          'src/app.ts': 'persist()',
+          'src/new.ts': 'introducedNow()',
+          'src/legacy.ts': 'legacyProblem()',
+        };
+        return Promise.resolve(contents[path]);
+      });
       mockRules.getActiveRulesForRepo.mockResolvedValue([]);
       mockLlm.analyze.mockResolvedValue([
         {
@@ -348,11 +378,20 @@ describe('AnalysisService', () => {
           },
         ],
       });
-      mockGithub.getPRContext.mockResolvedValue({ title: 'Fix bug', body: 'details' });
-      mockGithub.getPRFiles.mockResolvedValue([
-        { filename: 'src/legacy.ts', patch: '@@ -1 +1 @@\n+legacyProblem()', status: 'modified' },
-      ]);
-      mockGithub.getCompareFiles.mockResolvedValue([]);
+      mockGithub.getCompareFiles.mockImplementation((_owner: string, _repo: string, base: string) => {
+        if (base === 'prev123') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([
+          { filename: 'src/legacy.ts', patch: '@@ -1 +1 @@\n+legacyProblem()', status: 'modified' },
+        ]);
+      });
+      mockGithub.getFileContent.mockImplementation((_owner: string, _repo: string, path: string) => {
+        if (path === 'src/legacy.ts') {
+          return Promise.resolve('legacyProblem()');
+        }
+        return Promise.resolve(undefined);
+      });
       mockRules.getActiveRulesForRepo.mockResolvedValue([]);
       mockLlm.analyze.mockResolvedValue([
         {
@@ -386,11 +425,60 @@ describe('AnalysisService', () => {
       );
     });
 
+    it('should complete the pipeline and keep the score even if general analysis fails', async () => {
+      mockPrisma.analysis.findUnique.mockResolvedValue(null);
+      mockGithub.getCompareFiles.mockResolvedValue([
+        {
+          filename: 'src/app.ts',
+          patch: '@@ -1 +1 @@\n+const secret = "hardcoded";',
+          status: 'modified',
+        },
+      ]);
+      mockGithub.getFileContent.mockImplementation((_owner: string, _repo: string, path: string) => {
+        if (path === 'src/app.ts') {
+          return Promise.resolve('const secret = "hardcoded";');
+        }
+        return Promise.resolve(undefined);
+      });
+      mockRules.getActiveRulesForRepo.mockResolvedValue([]);
+      mockLlm.analyze.mockResolvedValue([
+        {
+          file: 'src/app.ts',
+          snippet: 'const secret = "hardcoded";',
+          description: 'Hardcoded secret',
+          reason: 'Exposes credentials',
+          criticality: 'high',
+          rule: 'Security',
+        },
+      ]);
+      mockLlm.analyzeGeneral.mockRejectedValue(
+        new Error('429 Request too large for gpt-4o on tokens per min (TPM)'),
+      );
+      mockScoring.calculate.mockReturnValue(90);
+      mockPrisma.analysis.create.mockResolvedValue({ id: 'new-analysis-id', score: 90 });
+
+      const svc = makeService();
+      await svc.runPipeline(EVENT);
+
+      expect(mockPrisma.analysis.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ score: 90, generalIssues: [] }),
+        }),
+      );
+      expect(mockEmitter.emit).toHaveBeenCalledWith(
+        ANALYSIS_COMPLETED,
+        expect.objectContaining({ analysisId: 'new-analysis-id' }),
+      );
+      expect(mockEmitter.emit).not.toHaveBeenCalledWith(
+        ANALYSIS_FAILED,
+        expect.anything(),
+      );
+    });
+
     it('should use default scoring weights when no config exists', async () => {
       mockPrisma.analysis.findUnique.mockResolvedValue(null);
       mockPrisma.scoringConfig.findFirst.mockResolvedValue(null);
-      mockGithub.getPRContext.mockResolvedValue({ title: 'PR', body: '' });
-      mockGithub.getPRFiles.mockResolvedValue([]);
+      mockGithub.getCompareFiles.mockResolvedValue([]);
       mockRules.getActiveRulesForRepo.mockResolvedValue([]);
       mockLlm.analyze.mockResolvedValue([]);
       mockScoring.calculate.mockReturnValue(100);

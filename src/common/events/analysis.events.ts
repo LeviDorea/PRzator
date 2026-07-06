@@ -3,7 +3,9 @@ export interface AnalysisRequestedEvent {
   repo: string;
   prNumber: number;
   prTitle: string;
+  prBody: string;
   installationId: number;
+  baseSha: string;
   commitSha: string;
   repositoryId: string;
 }
