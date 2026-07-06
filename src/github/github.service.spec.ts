@@ -196,4 +196,66 @@ describe('GithubService', () => {
       expect(mockRequest).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe('upsertManagedComment', () => {
+    it('should create a new comment when no managed comment exists yet', async () => {
+      const { svc, mockRequest } = buildService();
+      mockRequest
+        .mockResolvedValueOnce({ data: [] })
+        .mockResolvedValueOnce({});
+
+      await svc.upsertManagedComment(
+        'org',
+        'repo',
+        42,
+        INSTALLATION_ID,
+        '## 🤖 PRzator · Análise automática\n\nnovo corpo',
+      );
+
+      expect(mockRequest).toHaveBeenNthCalledWith(
+        1,
+        'GET /repos/{owner}/{repo}/issues/{issue_number}/comments',
+        expect.objectContaining({ issue_number: 42, per_page: 100 }),
+      );
+      expect(mockRequest).toHaveBeenNthCalledWith(
+        2,
+        'POST /repos/{owner}/{repo}/issues/{issue_number}/comments',
+        expect.objectContaining({ issue_number: 42, body: '## 🤖 PRzator · Análise automática\n\nnovo corpo' }),
+      );
+    });
+
+    it('should update the latest managed comment instead of creating a new one', async () => {
+      const { svc, mockRequest } = buildService();
+      mockRequest
+        .mockResolvedValueOnce({
+          data: [
+            { id: 10, body: 'comentario qualquer' },
+            { id: 77, body: '## 🤖 PRzator · Análise automática\n\ncomentario antigo' },
+          ],
+        })
+        .mockResolvedValueOnce({});
+
+      await svc.upsertManagedComment(
+        'org',
+        'repo',
+        42,
+        INSTALLATION_ID,
+        '## 🤖 PRzator · Análise automática\n\ncomentario atualizado',
+      );
+
+      expect(mockRequest).toHaveBeenNthCalledWith(
+        1,
+        'GET /repos/{owner}/{repo}/issues/{issue_number}/comments',
+        expect.objectContaining({ issue_number: 42, per_page: 100 }),
+      );
+      expect(mockRequest).toHaveBeenNthCalledWith(
+        2,
+        'PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}',
+        expect.objectContaining({
+          comment_id: 77,
+          body: '## 🤖 PRzator · Análise automática\n\ncomentario atualizado',
+        }),
+      );
+    });
+  });
 });

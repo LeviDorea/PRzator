@@ -42,7 +42,7 @@ export class CommentListener {
       generalIssues: (analysis.generalIssues as any[]) ?? [],
     });
 
-    await this.github.publishComment(owner, repo, prNumber, installationId, body);
+    await this.github.upsertManagedComment(owner, repo, prNumber, installationId, body);
 
     await this.prisma.analysis.update({
       where: { id: analysisId },

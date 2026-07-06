@@ -2,6 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { withRetry } from '../common/utils/retry.util';
 
+const MANAGED_ANALYSIS_COMMENT_MARKER = '## 🤖 PRzator · Análise automática';
+
 @Injectable()
 export class GithubService {
   private readonly logger = new Logger(GithubService.name);
@@ -250,6 +252,73 @@ export class GithubService {
             owner,
             repo,
             prNumber,
+            error: String(err),
+          });
+        },
+      },
+    );
+  }
+
+  async upsertManagedComment(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    installationId: number,
+    body: string,
+    marker = MANAGED_ANALYSIS_COMMENT_MARKER,
+  ): Promise<void> {
+    const octokit = await this.getInstallationOctokit(installationId);
+    const { data } = await withRetry<{ data: any[] }>(
+      () =>
+        (octokit as any).request(
+          'GET /repos/{owner}/{repo}/issues/{issue_number}/comments',
+          { owner, repo, issue_number: prNumber, per_page: 100 },
+        ),
+      {
+        ...this.githubRetryOpts,
+        onFinalFailure: async (err: unknown) => {
+          this.logger.error('Failed to list comments after all retries', {
+            module: 'GithubService',
+            action: 'upsertManagedComment.listComments',
+            owner,
+            repo,
+            prNumber,
+            error: String(err),
+          });
+        },
+      },
+    );
+
+    const existingComment = [...data]
+      .reverse()
+      .find((comment) => typeof comment?.body === 'string' && comment.body.includes(marker));
+
+    if (!existingComment) {
+      await this.publishComment(owner, repo, prNumber, installationId, body);
+      return;
+    }
+
+    await withRetry(
+      () =>
+        (octokit as any).request(
+          'PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}',
+          {
+            owner,
+            repo,
+            comment_id: existingComment.id,
+            body,
+          },
+        ),
+      {
+        ...this.githubRetryOpts,
+        onFinalFailure: async (err: unknown) => {
+          this.logger.error('Failed to update managed comment after all retries', {
+            module: 'GithubService',
+            action: 'upsertManagedComment.updateComment',
+            owner,
+            repo,
+            prNumber,
+            commentId: existingComment.id,
             error: String(err),
           });
         },
