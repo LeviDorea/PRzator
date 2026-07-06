@@ -4,7 +4,7 @@ import { ChatOpenAI } from '@langchain/openai';
 import { z } from 'zod';
 import { withRetry } from '../common/utils/retry.util';
 import { DiffFile, DiffService } from './diff.service';
-import { FileRulesContext } from '../rules/rules.service';
+import { FileRulesContext, RulePromptContext } from '../rules/rules.service';
 import { GeneralIssue, ReviewIssue } from './review-issue.types';
 import { buildIssueKey, buildGeneralIssueKey, issueMatchesDiff } from './review-issue.util';
 
@@ -77,6 +77,7 @@ export class LlmService {
     files: DiffFile[],
     sharedContext: string,
     rulesByFile: FileRulesContext[],
+    prRules: RulePromptContext[] = [],
   ): Promise<ReviewIssue[]> {
     const rulesLookup = new Map(rulesByFile.map((entry) => [entry.filename, entry]));
     const filesWithRules = files.filter((file) => {
@@ -84,13 +85,25 @@ export class LlmService {
       return applicableRules.length > 0;
     });
 
-    if (filesWithRules.length === 0) {
+    if (filesWithRules.length === 0 && prRules.length === 0) {
       return [];
     }
 
-    const batches = this.diffService.splitIntoBatches(filesWithRules, this.maxTokens);
     const allIssues: LlmIssue[] = [];
 
+    if (prRules.length > 0) {
+      allIssues.push(
+        ...(await this.analyzePrScopeWithFallback(
+          prTitle,
+          prBody,
+          files,
+          sharedContext,
+          prRules,
+        )),
+      );
+    }
+
+    const batches = this.diffService.splitIntoBatches(filesWithRules, this.maxTokens);
     for (const batch of batches) {
       const issues = await this.analyzeBatchWithFallback(
         prTitle,
@@ -111,16 +124,39 @@ export class LlmService {
     files: DiffFile[],
     agentsMdContent: string | undefined,
     previousIssues: GeneralIssue[],
+    incrementalFiles?: DiffFile[],
   ): Promise<GeneralIssue[]> {
     if (files.length === 0) {
       return [];
     }
 
+    const discoveryFiles =
+      incrementalFiles ?? (previousIssues.length === 0 ? files : []);
+
     if (previousIssues.length === 0) {
-      return this.discoverGeneralIssues(prTitle, prBody, files, agentsMdContent);
+      return this.discoverGeneralIssues(
+        prTitle,
+        prBody,
+        discoveryFiles,
+        agentsMdContent,
+      );
     }
 
-    return this.verifyGeneralIssues(files, previousIssues);
+    const verifiedIssues = await this.verifyGeneralIssues(files, previousIssues);
+    if (discoveryFiles.length === 0) {
+      return this.applyGeneralIssueCaps(verifiedIssues);
+    }
+
+    const discoveredIssues = await this.discoverGeneralIssuesRaw(
+      prTitle,
+      prBody,
+      discoveryFiles,
+      agentsMdContent,
+    );
+
+    return this.applyGeneralIssueCaps(
+      this.mergeGeneralIssues(verifiedIssues, discoveredIssues),
+    );
   }
 
   private async discoverGeneralIssues(
@@ -129,6 +165,26 @@ export class LlmService {
     files: DiffFile[],
     agentsMdContent: string | undefined,
   ): Promise<GeneralIssue[]> {
+    return this.applyGeneralIssueCaps(
+      await this.discoverGeneralIssuesRaw(
+        prTitle,
+        prBody,
+        files,
+        agentsMdContent,
+      ),
+    );
+  }
+
+  private async discoverGeneralIssuesRaw(
+    prTitle: string,
+    prBody: string,
+    files: DiffFile[],
+    agentsMdContent: string | undefined,
+  ): Promise<GeneralIssue[]> {
+    if (files.length === 0) {
+      return [];
+    }
+
     const batches = this.diffService.splitIntoBatches(files, this.maxTokens);
     const allIssues: LlmGeneralIssue[] = [];
 
@@ -144,8 +200,7 @@ export class LlmService {
     }
 
     const diffFiltered = allIssues.filter((issue) => issueMatchesDiff(issue, files));
-    const deduped = this.deduplicateGeneralIssues(diffFiltered);
-    return this.applyGeneralIssueCaps(deduped);
+    return this.deduplicateGeneralIssues(diffFiltered);
   }
 
   private async discoverGeneralBatchWithFallback(
@@ -332,6 +387,20 @@ Return only the issueKey values that are still present.`;
       .join('\n\n');
   }
 
+  private formatCompactDiff(files: DiffFile[]): string {
+    return files
+      .map((file) => {
+        const excerpt = this.compactPatch(file.patch);
+        return [
+          `### ${file.filename} (${file.status})`,
+          '```diff',
+          excerpt || '(no diff hunk available)',
+          '```',
+        ].join('\n');
+      })
+      .join('\n\n');
+  }
+
   private deduplicateGeneralIssues(issues: LlmGeneralIssue[]): GeneralIssue[] {
     const unique = new Map<string, GeneralIssue>();
 
@@ -343,6 +412,21 @@ Return only the issueKey values that are still present.`;
     }
 
     return Array.from(unique.values());
+  }
+
+  private mergeGeneralIssues(
+    verifiedIssues: GeneralIssue[],
+    discoveredIssues: GeneralIssue[],
+  ): GeneralIssue[] {
+    const merged = new Map<string, GeneralIssue>();
+
+    for (const issue of [...verifiedIssues, ...discoveredIssues]) {
+      if (!merged.has(issue.issueKey)) {
+        merged.set(issue.issueKey, issue);
+      }
+    }
+
+    return Array.from(merged.values());
   }
 
   private applyGeneralIssueCaps(issues: GeneralIssue[]): GeneralIssue[] {
@@ -436,6 +520,128 @@ Return only the issueKey values that are still present.`;
     }
   }
 
+  private async analyzePrScopeWithFallback(
+    prTitle: string,
+    prBody: string,
+    files: DiffFile[],
+    sharedContext: string,
+    prRules: RulePromptContext[],
+    compactMode = false,
+  ): Promise<LlmIssue[]> {
+    try {
+      return await this.analyzePrScope(
+        prTitle,
+        prBody,
+        files,
+        sharedContext,
+        prRules,
+        compactMode,
+      );
+    } catch (err) {
+      if (!this.isPromptTooLargeError(err)) {
+        throw err;
+      }
+
+      const estimatedTokens = this.estimatePrScopeTokens(
+        prTitle,
+        prBody,
+        files,
+        sharedContext,
+        prRules,
+        compactMode,
+      );
+
+      if (sharedContext) {
+        this.logger.warn(
+          `PR-scope prompt too large (~${estimatedTokens} tokens); retrying without shared context`,
+        );
+        return this.analyzePrScopeWithFallback(
+          prTitle,
+          prBody,
+          files,
+          '',
+          prRules,
+          compactMode,
+        );
+      }
+
+      if (!compactMode) {
+        this.logger.warn(
+          `PR-scope prompt too large (~${estimatedTokens} tokens); retrying with compact diff excerpts`,
+        );
+        return this.analyzePrScopeWithFallback(
+          prTitle,
+          prBody,
+          files,
+          '',
+          prRules,
+          true,
+        );
+      }
+
+      this.logger.error(
+        `PR-scope prompt is still too large for ${files.length} file(s) even after compact fallback`,
+      );
+      throw err;
+    }
+  }
+
+  private async analyzePrScope(
+    prTitle: string,
+    prBody: string,
+    files: DiffFile[],
+    sharedContext: string,
+    prRules: RulePromptContext[],
+    compactMode: boolean,
+  ): Promise<LlmIssue[]> {
+    if (prRules.length === 0 || files.length === 0) {
+      return [];
+    }
+
+    const diff = compactMode
+      ? this.formatCompactDiff(files)
+      : this.formatDiffPlain(files);
+    const prompt = this.buildPrScopePrompt(
+      prTitle,
+      prBody,
+      diff,
+      sharedContext,
+      prRules,
+      compactMode,
+    );
+
+    const structuredModel = this.model.withStructuredOutput(LlmOutputSchema);
+
+    const retryOn = (err: unknown): boolean => {
+      if (this.isPromptTooLargeError(err)) {
+        return false;
+      }
+
+      const status = (err as any)?.status ?? (err as any)?.response?.status;
+      return status === 429 || status >= 500;
+    };
+
+    const result = await withRetry<{ issues: LlmIssue[] }>(
+      () => structuredModel.invoke(prompt) as Promise<{ issues: LlmIssue[] }>,
+      {
+        maxAttempts: 3,
+        delays: [2000, 4000, 8000],
+        retryOn,
+        onFinalFailure: async (err) => {
+          if (this.isPromptTooLargeError(err)) {
+            return;
+          }
+
+          this.logger.error(
+            `PR-scope analysis failed after all retries: ${String(err)}`,
+          );
+        },
+      },
+    );
+
+    return result.issues;
+  }
+
   private async analyzeBatch(
     prTitle: string,
     prBody: string,
@@ -522,6 +728,38 @@ ${sharedContext ? `## Shared/Imported Files Context (read-only)\n${sharedContext
 Report only violations. If no rule is violated, return { "issues": [] }.`;
   }
 
+  private buildPrScopePrompt(
+    prTitle: string,
+    prBody: string,
+    diff: string,
+    sharedContext: string,
+    prRules: RulePromptContext[],
+    compactMode: boolean,
+  ): string {
+    return `You are a strict code reviewer. Your job is to enforce only the PR-level rules listed below.
+
+## Core Constraints
+- Evaluate the Pull Request as a whole. These rules may depend on the presence or absence of companion files elsewhere in the PR.
+- Only report violations of the PR-level rules listed below. Do not invent issues outside those rules.
+- A review with zero issues is correct and expected. Do not force findings.
+- Every issue must point to a line that exists in the changed snippets below. If the violation is about a missing companion file, attach the issue to the changed source snippet that requires that companion file.
+- Shared/imported files are read-only context. Never create an issue targeting them.
+- If the PR is compliant with the listed rules, return an empty issues array.
+- \`description\` and \`reason\` must say different things. \`description\` states the problem in general terms. \`reason\` must explain why this PR violates the rule, citing the actual changed snippet and the missing or inconsistent companion evidence elsewhere in the PR.
+
+## Pull Request
+Title: ${prTitle}
+Description: ${prBody || '(none)'}
+
+## PR-Level Rules
+${this.formatRulesList(prRules)}
+
+## Files Changed
+${diff}
+
+${compactMode ? '## Notes\nThe full diff was too large, so the snippets above are compact excerpts. Be extra conservative and report only issues that are clearly supported.\n\n' : ''}${sharedContext ? `## Shared/Imported Files Context (read-only)\n${sharedContext}\n` : ''}Report only violations. If no rule is violated, return { "issues": [] }.`;
+  }
+
   private formatDiffWithRules(
     files: DiffFile[],
     rulesLookup: Map<string, FileRulesContext>,
@@ -529,9 +767,7 @@ Report only violations. If no rule is violated, return { "issues": [] }.`;
     return files
       .map((file) => {
         const ruleContext = rulesLookup.get(file.filename);
-        const rulesText = (ruleContext?.rules ?? [])
-          .map((rule) => `- [${rule.criticality.toUpperCase()}] ${rule.title}: ${rule.description}`)
-          .join('\n');
+        const rulesText = this.formatRulesList(ruleContext?.rules ?? []);
 
         return [
           `### ${file.filename} (${file.status})`,
@@ -544,6 +780,20 @@ Report only violations. If no rule is violated, return { "issues": [] }.`;
         ].join('\n');
       })
       .join('\n\n');
+  }
+
+  private formatRulesList(rules: RulePromptContext[]): string {
+    return rules
+      .map((rule) => {
+        const lines = [
+          `- [${rule.criticality.toUpperCase()}] ${rule.title}: ${rule.description}`,
+        ];
+        if (rule.whyThisRuleExists) {
+          lines.push(`  Why this rule exists: ${rule.whyThisRuleExists}`);
+        }
+        return lines.join('\n');
+      })
+      .join('\n');
   }
 
   private consolidateIssues(issues: LlmIssue[], files: DiffFile[]): ReviewIssue[] {
@@ -594,6 +844,29 @@ Report only violations. If no rule is violated, return { "issues": [] }.`;
     const rulesLookup = new Map(rulesByFile.map((entry) => [entry.filename, entry]));
     const diff = this.formatDiffWithRules(files, rulesLookup);
     return this.estimateTokens(this.buildPrompt(prTitle, prBody, diff, sharedContext));
+  }
+
+  private estimatePrScopeTokens(
+    prTitle: string,
+    prBody: string,
+    files: DiffFile[],
+    sharedContext: string,
+    prRules: RulePromptContext[],
+    compactMode: boolean,
+  ): number {
+    const diff = compactMode
+      ? this.formatCompactDiff(files)
+      : this.formatDiffPlain(files);
+    return this.estimateTokens(
+      this.buildPrScopePrompt(
+        prTitle,
+        prBody,
+        diff,
+        sharedContext,
+        prRules,
+        compactMode,
+      ),
+    );
   }
 
   private estimateTokens(text: string): number {
@@ -649,5 +922,20 @@ Report only violations. If no rule is violated, return { "issues": [] }.`;
       ...file,
       patch,
     }));
+  }
+
+  private compactPatch(patch: string): string {
+    const trimmed = patch.trim();
+    if (!trimmed) {
+      return '';
+    }
+
+    const lines = trimmed.split('\n');
+    const maxLines = 24;
+    if (lines.length <= maxLines) {
+      return trimmed;
+    }
+
+    return [...lines.slice(0, maxLines), '... [truncated]'].join('\n');
   }
 }

@@ -54,6 +54,12 @@ const mockEmitter = {
   emit: jest.fn(),
 };
 
+const EMPTY_ACTIVE_RULES = {
+  files: [],
+  prRules: [],
+  contextPaths: [],
+};
+
 const EVENT: AnalysisRequestedEvent = {
   owner: 'org',
   repo: 'repo',
@@ -108,9 +114,26 @@ describe('AnalysisService', () => {
           status: 'modified',
         },
       ]);
-      mockRules.getActiveRulesForRepo.mockResolvedValue([
-        { filename: 'src/app.ts', language: 'typescript', rules: [{ title: 'Security', description: 'Check', criticality: 'high' }] },
-      ]);
+      mockRules.getActiveRulesForRepo.mockResolvedValue({
+        files: [
+          {
+            filename: 'src/app.ts',
+            language: 'typescript',
+            rules: [
+              {
+                title: 'Security',
+                description: 'Check',
+                criticality: 'high',
+                scope: 'file',
+                whyThisRuleExists: null,
+                localEvidence: [],
+              },
+            ],
+          },
+        ],
+        prRules: [],
+        contextPaths: [],
+      });
       mockGithub.getFileContent.mockImplementation((_owner: string, _repo: string, path: string) => {
         if (path === 'AGENTS.md') {
           return Promise.resolve(`# Notes
@@ -173,6 +196,7 @@ Some repository conventions live here.
           },
         ],
         'abc123',
+        [],
       );
       expect(mockLlm.analyze).toHaveBeenCalledWith(
         'Fix bug',
@@ -189,9 +213,19 @@ Some repository conventions live here.
           {
             filename: 'src/app.ts',
             language: 'typescript',
-            rules: [{ title: 'Security', description: 'Check', criticality: 'high' }],
+            rules: [
+              {
+                title: 'Security',
+                description: 'Check',
+                criticality: 'high',
+                scope: 'file',
+                whyThisRuleExists: null,
+                localEvidence: [],
+              },
+            ],
           },
         ],
+        [],
       );
       expect(mockLlm.analyzeGeneral).toHaveBeenCalledWith(
         'Fix bug',
@@ -205,6 +239,13 @@ Some repository conventions live here.
         ],
         '# Notes\n\nSome repository conventions live here.',
         [],
+        [
+          {
+            filename: 'src/app.ts',
+            patch: '@@ -1 +1 @@\n+const secret = "hardcoded";',
+            status: 'modified',
+          },
+        ],
       );
       expect(mockScoring.calculate).toHaveBeenCalledWith(
         [
@@ -293,7 +334,7 @@ Some repository conventions live here.
         };
         return Promise.resolve(contents[path]);
       });
-      mockRules.getActiveRulesForRepo.mockResolvedValue([]);
+      mockRules.getActiveRulesForRepo.mockResolvedValue(EMPTY_ACTIVE_RULES);
       mockLlm.analyze.mockResolvedValue([
         {
           file: 'src/app.ts',
@@ -389,7 +430,7 @@ Some repository conventions live here.
         }
         return Promise.resolve(undefined);
       });
-      mockRules.getActiveRulesForRepo.mockResolvedValue([]);
+      mockRules.getActiveRulesForRepo.mockResolvedValue(EMPTY_ACTIVE_RULES);
       mockLlm.analyze.mockResolvedValue([
         {
           file: 'src/legacy.ts',
@@ -426,7 +467,7 @@ Some repository conventions live here.
         }
         return Promise.resolve(undefined);
       });
-      mockRules.getActiveRulesForRepo.mockResolvedValue([]);
+      mockRules.getActiveRulesForRepo.mockResolvedValue(EMPTY_ACTIVE_RULES);
       mockLlm.analyze.mockResolvedValue([
         {
           file: 'src/app.ts',
@@ -461,11 +502,142 @@ Some repository conventions live here.
       );
     });
 
+    it('should drop Cake fixture-test issues when the matching changed tests reference the new behavior', async () => {
+      mockPrisma.analysis.findUnique.mockResolvedValue(null);
+      mockGithub.getCompareFiles.mockResolvedValue([
+        {
+          filename: 'php/app/Controller/PedidosController.php',
+          patch: '@@ -1 +1 @@\n+public function warRoom()',
+          status: 'modified',
+        },
+        {
+          filename: 'php/app/Model/Pedido.php',
+          patch: '@@ -1 +1 @@\n+public function buildWarRoomSnapshot(array $filters = [], array $scenario = [])',
+          status: 'modified',
+        },
+        {
+          filename: 'php/app/Test/Case/Controller/PedidosControllerTest.php',
+          patch: '@@ -1 +1 @@\n+public function testWarRoomSetsScenarioAndSnapshot()',
+          status: 'modified',
+        },
+        {
+          filename: 'php/app/Test/Case/Model/PedidoTest.php',
+          patch: '@@ -1 +1 @@\n+public function testBuildWarRoomSnapshotReturnsRecoveryPlanAndMessages()',
+          status: 'modified',
+        },
+      ]);
+      mockGithub.getFileContent.mockImplementation((_owner: string, _repo: string, path: string) => {
+        const contents: Record<string, string> = {
+          'php/app/Controller/PedidosController.php':
+            'public function warRoom()\n    {\n        // ...\n    }',
+          'php/app/Model/Pedido.php':
+            'public function buildWarRoomSnapshot(array $filters = [], array $scenario = [])\n    {\n        // ...\n    }',
+          'php/app/Test/Case/Controller/PedidosControllerTest.php':
+            "public function testWarRoomSetsScenarioAndSnapshot() { return $this->testAction('/pedidos/war-room'); }",
+          'php/app/Test/Case/Model/PedidoTest.php':
+            'public function testBuildWarRoomSnapshotReturnsRecoveryPlanAndMessages() { $this->Pedido->buildWarRoomSnapshot([], []); }',
+        };
+        return Promise.resolve(contents[path]);
+      });
+      mockRules.getActiveRulesForRepo.mockResolvedValue(EMPTY_ACTIVE_RULES);
+      mockLlm.analyze.mockResolvedValue([
+        {
+          file: 'php/app/Controller/PedidosController.php',
+          snippet: 'public function warRoom()\n    {\n        // ...\n    }',
+          description: 'Missing fixture-backed controller coverage.',
+          reason: 'warRoom introduced new behavior without matching ControllerTestCase coverage.',
+          criticality: 'high',
+          rule: 'Controller And Model Changes Need Fixture-Backed Cake Tests',
+        },
+        {
+          file: 'php/app/Model/Pedido.php',
+          snippet:
+            'public function buildWarRoomSnapshot(array $filters = [], array $scenario = [])\n    {\n        // ...\n    }',
+          description: 'Missing fixture-backed model coverage.',
+          reason: 'buildWarRoomSnapshot introduced new behavior without matching CakeTestCase coverage.',
+          criticality: 'high',
+          rule: 'Controller And Model Changes Need Fixture-Backed Cake Tests',
+        },
+      ]);
+      mockScoring.calculate.mockReturnValue(100);
+      mockPrisma.analysis.create.mockResolvedValue({ id: 'analysis-cake-fixtures', score: 100 });
+
+      const svc = makeService();
+      await svc.runPipeline(EVENT);
+
+      expect(mockScoring.calculate).toHaveBeenCalledWith([], { high: 10, medium: 4, low: 1 });
+      expect(mockPrisma.analysis.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            issues: [],
+          }),
+        }),
+      );
+    });
+
+    it('should drop missing-method general issues when the target PHP method exists', async () => {
+      mockPrisma.analysis.findUnique.mockResolvedValue(null);
+      mockGithub.getCompareFiles.mockResolvedValue([
+        {
+          filename: 'php/app/Controller/PedidosController.php',
+          patch: '@@ -1 +1 @@\n+$filters = $this->Pedido->normalizeControlCenterFilters($this->request->query);',
+          status: 'modified',
+        },
+        {
+          filename: 'php/app/Model/Pedido.php',
+          patch: '@@ -1 +1 @@\n+$orders = $this->findControlCenterOrders($filters, 200);',
+          status: 'modified',
+        },
+      ]);
+      mockGithub.getFileContent.mockImplementation((_owner: string, _repo: string, path: string) => {
+        const contents: Record<string, string> = {
+          'php/app/Model/Pedido.php':
+            'public function normalizeControlCenterFilters(array $query) {}\npublic function findControlCenterOrders(array $filters = [], $limit = 20) {}',
+        };
+        return Promise.resolve(contents[path]);
+      });
+      mockRules.getActiveRulesForRepo.mockResolvedValue(EMPTY_ACTIVE_RULES);
+      mockLlm.analyze.mockResolvedValue([]);
+      mockLlm.analyzeGeneral.mockResolvedValue([
+        {
+          file: 'php/app/Controller/PedidosController.php',
+          snippet: '$filters = $this->Pedido->normalizeControlCenterFilters($this->request->query);',
+          description:
+            'The method `normalizeControlCenterFilters` is called but not defined in the `Pedido` model. This could lead to a fatal error if the method does not exist.',
+          reason: 'Missing method definition',
+          criticality: 'high',
+          issueKey: 'general-1',
+        },
+        {
+          file: 'php/app/Model/Pedido.php',
+          snippet: '$orders = $this->findControlCenterOrders($filters, 200);',
+          description:
+            'The method `findControlCenterOrders` is called but not defined in the `Pedido` model. This could lead to a fatal error if the method does not exist.',
+          reason: 'Missing method definition',
+          criticality: 'high',
+          issueKey: 'general-2',
+        },
+      ]);
+      mockScoring.calculate.mockReturnValue(100);
+      mockPrisma.analysis.create.mockResolvedValue({ id: 'analysis-general-methods', score: 100 });
+
+      const svc = makeService();
+      await svc.runPipeline(EVENT);
+
+      expect(mockPrisma.analysis.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            generalIssues: [],
+          }),
+        }),
+      );
+    });
+
     it('should use default scoring weights when no config exists', async () => {
       mockPrisma.analysis.findUnique.mockResolvedValue(null);
       mockPrisma.scoringConfig.findFirst.mockResolvedValue(null);
       mockGithub.getCompareFiles.mockResolvedValue([]);
-      mockRules.getActiveRulesForRepo.mockResolvedValue([]);
+      mockRules.getActiveRulesForRepo.mockResolvedValue(EMPTY_ACTIVE_RULES);
       mockLlm.analyze.mockResolvedValue([]);
       mockScoring.calculate.mockReturnValue(100);
       mockPrisma.analysis.create.mockResolvedValue({ id: 'x', score: 100 });

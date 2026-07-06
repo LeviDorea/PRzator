@@ -382,6 +382,49 @@ describe('LlmService', () => {
     expect(result[0].description).toBe('Valid diff issue');
   });
 
+  it('should run PR-scoped rules once across the whole PR even without file-scoped rules', async () => {
+    mockInvoke.mockResolvedValue({
+      issues: [
+        {
+          file: 'src/app.ts',
+          snippet: 'export function saveOrder() {}',
+          description: 'Missing PR-level companion coverage',
+          reason: 'The changed behavior has no matching test update anywhere else in the PR.',
+          criticality: 'high' as const,
+          rule: 'Controller changes need tests',
+        },
+      ],
+    });
+
+    const svc = new LlmService(mockConfig as any, new DiffService());
+    const result = await svc.analyze(
+      'PR title',
+      'PR body',
+      [
+        { filename: 'src/app.ts', patch: '@@ -1 +1 @@\n+export function saveOrder() {}', status: 'modified' },
+        { filename: 'src/app.spec.ts', patch: '@@ -1 +1 @@\n+describe(\"noop\")', status: 'modified' },
+      ],
+      '',
+      [],
+      [
+        {
+          title: 'Controller changes need tests',
+          description: 'Behavior changes must ship with matching tests somewhere in the PR.',
+          criticality: 'high',
+          scope: 'pr',
+          whyThisRuleExists: 'This repo treats coverage as a PR-level requirement.',
+        },
+      ],
+    );
+
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    expect(mockInvoke.mock.calls[0][0]).toContain('## PR-Level Rules');
+    expect(mockInvoke.mock.calls[0][0]).toContain('### src/app.ts (modified)');
+    expect(mockInvoke.mock.calls[0][0]).toContain('### src/app.spec.ts (modified)');
+    expect(result).toHaveLength(1);
+    expect(result[0].rule).toBe('Controller changes need tests');
+  });
+
   describe('analyzeGeneral', () => {
     it('should run discovery mode and assign issueKeys when there are no previous issues', async () => {
       mockInvoke.mockResolvedValue({
@@ -481,6 +524,63 @@ describe('LlmService', () => {
       ]);
 
       expect(result).toEqual([stillPresentIssue]);
+    });
+
+    it('should discover new general issues only from the incremental diff after verifying previous ones', async () => {
+      const previousIssue = {
+        file: 'src/app.ts',
+        snippet: 'persist()',
+        description: 'Previous issue',
+        reason: 'Still present',
+        criticality: 'high' as const,
+        issueKey: buildGeneralIssueKey({
+          file: 'src/app.ts',
+          description: 'Previous issue',
+          reason: 'Still present',
+        }),
+      };
+
+      mockInvoke
+        .mockResolvedValueOnce({
+          stillPresentIssueKeys: [previousIssue.issueKey],
+        })
+        .mockResolvedValueOnce({
+          issues: [
+            {
+              file: 'src/new.ts',
+              snippet: 'danger()',
+              description: 'New incremental issue',
+              reason: 'New code introduced a bug',
+              criticality: 'medium' as const,
+            },
+          ],
+        });
+
+      const svc = new LlmService(mockConfig as any, new DiffService());
+      const result = await svc.analyzeGeneral(
+        'PR title',
+        'PR body',
+        [
+          { filename: 'src/app.ts', patch: '@@ -1 +1 @@\n+persist()', status: 'modified' },
+          { filename: 'src/new.ts', patch: '@@ -1 +1 @@\n+danger()', status: 'modified' },
+        ],
+        undefined,
+        [previousIssue],
+        [{ filename: 'src/new.ts', patch: '@@ -1 +1 @@\n+danger()', status: 'modified' }],
+      );
+
+      expect(mockInvoke).toHaveBeenCalledTimes(2);
+      expect(result).toHaveLength(2);
+      expect(result).toEqual(
+        expect.arrayContaining([
+          previousIssue,
+          expect.objectContaining({
+            file: 'src/new.ts',
+            description: 'New incremental issue',
+            issueKey: expect.any(String),
+          }),
+        ]),
+      );
     });
 
     it('should never invent a new issue in verify mode even if the LLM returns an unknown key', async () => {
