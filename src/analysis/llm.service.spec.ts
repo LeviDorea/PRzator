@@ -425,6 +425,89 @@ describe('LlmService', () => {
     expect(result[0].rule).toBe('Controller changes need tests');
   });
 
+  it('should render the full file content alongside the diff when attached', async () => {
+    mockInvoke.mockResolvedValue({ issues: [] });
+    const svc = new LlmService(mockConfig as any, new DiffService());
+
+    await svc.analyze(
+      'PR title',
+      'PR body',
+      [
+        {
+          filename: 'src/app.ts',
+          patch: '@@ -5 +5 @@\n+export function saveOrder() {}',
+          status: 'modified',
+          fullContent: 'const declaredAtTop = true;\nexport function saveOrder() {}',
+        },
+      ],
+      '',
+      RULES,
+    );
+
+    const prompt = mockInvoke.mock.calls[0][0];
+    expect(prompt).toContain('Current file at head (full content):');
+    expect(prompt).toContain('const declaredAtTop = true;');
+    expect(prompt).toContain('Changes in this PR:');
+    expect(prompt).toContain('+export function saveOrder() {}');
+  });
+
+  describe('critiqueIssues', () => {
+    const criticIssues = [
+      {
+        file: 'a.php',
+        snippet: 'public function warRoom() {}',
+        description: 'Model used without $uses declaration.',
+        reason: 'Uses Pedido without declaring it.',
+        criticality: 'medium' as const,
+        rule: '$uses',
+        issueKey: 'k1',
+      },
+      {
+        file: 'a.php',
+        snippet: 'echo $x;',
+        description: 'Unescaped output.',
+        reason: 'No h() around $x.',
+        criticality: 'high' as const,
+        rule: 'Escaping',
+        issueKey: 'k2',
+      },
+    ];
+    const criticContents = [{ path: 'a.php', content: "public $uses = ['Pedido'];" }];
+
+    it('should return only refuted issueKeys it knows about', async () => {
+      mockInvoke.mockResolvedValue({
+        verdicts: [
+          { issueKey: 'k1', verdict: 'refuted', reason: "file declares public $uses = ['Pedido']" },
+          { issueKey: 'k2', verdict: 'confirmed', reason: 'no escaping visible' },
+          { issueKey: 'ghost', verdict: 'refuted', reason: 'unknown key must be ignored' },
+        ],
+      });
+      const svc = new LlmService(mockConfig as any, new DiffService());
+
+      const refuted = await svc.critiqueIssues(criticIssues as any, criticContents);
+
+      expect(refuted).toEqual(new Set(['k1']));
+      expect(mockInvoke.mock.calls[0][0]).toContain('issueKey: k1');
+      expect(mockInvoke.mock.calls[0][0]).toContain("public $uses = ['Pedido'];");
+    });
+
+    it('should fail open with an empty set when the critic prompt is too large', async () => {
+      mockInvoke.mockRejectedValue(oversizedPromptError);
+      const svc = new LlmService(mockConfig as any, new DiffService());
+
+      const refuted = await svc.critiqueIssues(criticIssues as any, criticContents);
+      expect(refuted).toEqual(new Set());
+    });
+
+    it('should not call the LLM without issues or file contents', async () => {
+      const svc = new LlmService(mockConfig as any, new DiffService());
+
+      expect(await svc.critiqueIssues([], criticContents)).toEqual(new Set());
+      expect(await svc.critiqueIssues(criticIssues as any, [])).toEqual(new Set());
+      expect(mockInvoke).not.toHaveBeenCalled();
+    });
+  });
+
   describe('analyzeGeneral', () => {
     it('should run discovery mode and assign issueKeys when there are no previous issues', async () => {
       mockInvoke.mockResolvedValue({

@@ -4,6 +4,8 @@ export interface DiffFile {
   filename: string;
   patch: string;
   status: string;
+  /** Full file content at head, attached when the file is small enough. */
+  fullContent?: string;
 }
 
 export interface DiffBatch {
@@ -22,7 +24,9 @@ export class DiffService {
     let currentTokens = 0;
 
     for (const file of files) {
-      const fileTokens = this.estimateTokens(`${file.filename}\n${file.patch}`);
+      const fileTokens = this.estimateTokens(
+        `${file.filename}\n${file.patch}\n${file.fullContent ?? ''}`,
+      );
 
       if (currentBatch.length > 0 && currentTokens + fileTokens > maxTokens) {
         batches.push({ files: currentBatch });

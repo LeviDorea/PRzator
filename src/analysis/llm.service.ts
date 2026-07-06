@@ -64,6 +64,20 @@ const GeneralVerifyOutputSchema = z.object({
   stillPresentIssueKeys: z.array(z.string()),
 });
 
+const CriticOutputSchema = z.object({
+  verdicts: z.array(
+    z.object({
+      issueKey: z.string(),
+      verdict: z.enum(['confirmed', 'refuted']),
+      reason: z
+        .string()
+        .describe(
+          'For refuted: quote the code in the provided file contents that contradicts the finding. For confirmed: one short sentence.',
+        ),
+    }),
+  ),
+});
+
 type LlmIssue = z.infer<typeof IssueSchema>;
 type LlmGeneralIssue = z.infer<typeof GeneralIssueSchema>;
 const DEFAULT_MAX_DIFF_TOKENS = 12000;
@@ -234,6 +248,18 @@ export class LlmService {
         throw err;
       }
 
+      if (files.some((file) => file.fullContent)) {
+        this.logger.warn(
+          `General-analysis prompt too large for ${files.length} file(s); retrying with diff hunks only`,
+        );
+        return this.discoverGeneralBatchWithFallback(
+          prTitle,
+          prBody,
+          this.stripFullContent(files),
+          agentsMdContent,
+        );
+      }
+
       if (agentsMdContent) {
         this.logger.warn(
           `General-analysis prompt too large for ${files.length} file(s); retrying without AGENTS.md context`,
@@ -397,12 +423,134 @@ ${diff}
 Return only the issueKey values that are still present.`;
   }
 
+  /**
+   * Critic pass: re-checks findings from the review pass against the full
+   * file contents at head and returns the issueKeys that are refuted —
+   * claims the file contents clearly contradict. Uncertainty confirms.
+   * Fails open: prompt-too-large returns an empty set instead of throwing.
+   */
+  async critiqueIssues(
+    issues: ReviewIssue[],
+    fileContents: Array<{ path: string; content: string }>,
+  ): Promise<Set<string>> {
+    if (issues.length === 0 || fileContents.length === 0) {
+      return new Set();
+    }
+
+    const prompt = this.buildCriticPrompt(issues, fileContents);
+    const structuredModel = this.model.withStructuredOutput(CriticOutputSchema);
+
+    let result: z.infer<typeof CriticOutputSchema>;
+    try {
+      result = await withRetry<z.infer<typeof CriticOutputSchema>>(
+        () => structuredModel.invoke(prompt) as Promise<z.infer<typeof CriticOutputSchema>>,
+        {
+          maxAttempts: 3,
+          delays: [2000, 4000, 8000],
+          retryOn: (err) => {
+            if (this.isPromptTooLargeError(err)) {
+              return false;
+            }
+            const status = (err as any)?.status ?? (err as any)?.response?.status;
+            return status === 429 || status >= 500;
+          },
+        },
+      );
+    } catch (err) {
+      if (this.isPromptTooLargeError(err)) {
+        this.logger.warn(
+          `Critic prompt too large for ${issues.length} issue(s); keeping all issues unverified`,
+        );
+        return new Set();
+      }
+      throw err;
+    }
+
+    const knownKeys = new Set(issues.map((issue) => issue.issueKey));
+    const refuted = new Set<string>();
+    for (const verdict of result.verdicts) {
+      if (verdict.verdict === 'refuted' && knownKeys.has(verdict.issueKey)) {
+        this.logger.log(
+          `Critic refuted issue ${verdict.issueKey}: ${verdict.reason}`,
+        );
+        refuted.add(verdict.issueKey);
+      }
+    }
+    return refuted;
+  }
+
+  private buildCriticPrompt(
+    issues: ReviewIssue[],
+    fileContents: Array<{ path: string; content: string }>,
+  ): string {
+    const findings = issues
+      .map((issue) =>
+        [
+          `- issueKey: ${issue.issueKey}`,
+          `  rule: ${issue.rule}`,
+          `  file: ${issue.file}`,
+          `  claim: ${issue.description}`,
+          `  reason: ${issue.reason}`,
+          `  snippet: ${issue.snippet.replace(/\n/g, '\n    ')}`,
+          ...(issue.evidence
+            ? [`  cited evidence: ${issue.evidence.file}: ${issue.evidence.quote}`]
+            : []),
+        ].join('\n'),
+      )
+      .join('\n');
+
+    const contents = fileContents
+      .map((file) => [`### ${file.path}`, '```', file.content, '```'].join('\n'))
+      .join('\n\n');
+
+    return `You are verifying findings produced by a previous automated code-review pass. For each finding, decide from the full file contents below whether the finding's claim is actually true.
+
+## Rules
+- Mark a finding "refuted" ONLY when the file contents clearly contradict its claim. Examples: the finding says a property/declaration is missing but the file shows it; the finding says input is not validated but the flagged code passes it through a validation/normalization method defined in the contents; the finding says something does not exist but it is present.
+- When you are uncertain, or the file needed to decide is not provided, mark the finding "confirmed". Never refute on speculation.
+- Do not judge severity or style; judge only whether the claim is factually consistent with the file contents.
+- Return exactly one verdict per finding, using its issueKey.
+
+## Findings To Verify
+${findings}
+
+## File Contents (full, at the PR head commit)
+${contents}
+
+Return a verdict for every finding.`;
+  }
+
   private formatDiffPlain(files: DiffFile[]): string {
     return files
       .map((file) =>
-        [`### ${file.filename} (${file.status})`, '```diff', file.patch, '```'].join('\n'),
+        [`### ${file.filename} (${file.status})`, ...this.formatFileBody(file)].join('\n'),
       )
       .join('\n\n');
+  }
+
+  /**
+   * Renders the diff hunks and, when attached, the full file at head so the
+   * model can verify claims about code outside the hunks before flagging.
+   */
+  private formatFileBody(file: DiffFile): string[] {
+    if (!file.fullContent) {
+      return ['```diff', file.patch, '```'];
+    }
+
+    return [
+      'Current file at head (full content):',
+      '```',
+      file.fullContent,
+      '```',
+      'Changes in this PR:',
+      '```diff',
+      file.patch,
+      '```',
+    ];
+  }
+
+  private stripFullContent(files: DiffFile[]): DiffFile[] {
+    return files.map(({ fullContent: _fullContent, ...rest }) => rest);
   }
 
   private formatCompactDiff(files: DiffFile[]): string {
@@ -497,6 +645,19 @@ Return only the issueKey values that are still present.`;
         rulesByFile,
       );
 
+      if (files.some((file) => file.fullContent)) {
+        this.logger.warn(
+          `LLM prompt too large (~${estimatedTokens} tokens); retrying with diff hunks only`,
+        );
+        return this.analyzeBatchWithFallback(
+          prTitle,
+          prBody,
+          this.stripFullContent(files),
+          sharedContext,
+          rulesByFile,
+        );
+      }
+
       if (sharedContext) {
         this.logger.warn(
           `LLM prompt too large (~${estimatedTokens} tokens) for ${files.length} file(s); retrying without shared context`,
@@ -568,6 +729,20 @@ Return only the issueKey values that are still present.`;
         prRules,
         compactMode,
       );
+
+      if (files.some((file) => file.fullContent)) {
+        this.logger.warn(
+          `PR-scope prompt too large (~${estimatedTokens} tokens); retrying with diff hunks only`,
+        );
+        return this.analyzePrScopeWithFallback(
+          prTitle,
+          prBody,
+          this.stripFullContent(files),
+          sharedContext,
+          prRules,
+          compactMode,
+        );
+      }
 
       if (sharedContext) {
         this.logger.warn(
@@ -735,6 +910,7 @@ Return only the issueKey values that are still present.`;
 - If the diff is clean relative to the rules, return an empty issues array.
 - \`description\` and \`reason\` must say different things. \`description\` states the problem in general terms. \`reason\` must explain, referencing the actual code in \`snippet\`, why this specific occurrence violates the rule. Never set \`reason\` to just the rule name or a copy of \`description\`.
 - When a violation claims that something already exists elsewhere (a duplicate query, an existing constant or method that should be reused), you MUST fill \`evidence\` with the file path and a literal quote of that existing code, copied from the diff or the shared context. If you cannot see and quote the existing code, do not report the issue.
+- When "Current file at head (full content)" is provided for a changed file, check it before claiming that something is missing, undeclared, or not handled: if the full content shows the declaration, validation, or handling, the claim is false — do not report it. Issues must still point at lines changed in the diff.
 
 ## Pull Request
 Title: ${prTitle}
@@ -766,6 +942,7 @@ Report only violations. If no rule is violated, return { "issues": [] }.`;
 - If the PR is compliant with the listed rules, return an empty issues array.
 - \`description\` and \`reason\` must say different things. \`description\` states the problem in general terms. \`reason\` must explain why this PR violates the rule, citing the actual changed snippet and the missing or inconsistent companion evidence elsewhere in the PR.
 - When a violation claims that something already exists elsewhere (a duplicate query, an existing constant or method that should be reused), you MUST fill \`evidence\` with the file path and a literal quote of that existing code, copied from the diff or the shared context. If you cannot see and quote the existing code, do not report the issue.
+- When "Current file at head (full content)" is provided for a changed file, check it before claiming that something is missing, undeclared, or not handled: if the full content shows the declaration, validation, or handling, the claim is false — do not report it.
 
 ## Pull Request
 Title: ${prTitle}
@@ -794,9 +971,7 @@ ${compactMode ? '## Notes\nThe full diff was too large, so the snippets above ar
           `Language: ${ruleContext?.language ?? 'unknown'}`,
           'Applicable Rules:',
           rulesText || '- None',
-          '```diff',
-          file.patch,
-          '```',
+          ...this.formatFileBody(file),
         ].join('\n');
       })
       .join('\n\n');

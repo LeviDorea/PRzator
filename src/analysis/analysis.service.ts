@@ -82,10 +82,11 @@ export class AnalysisService {
         return;
       }
 
-      const [previousAnalysis, prFiles] = await Promise.all([
+      const [previousAnalysis, comparedFiles] = await Promise.all([
         this.findPreviousAnalysis(repositoryId, prNumber, commitSha),
         this.github.getCompareFiles(owner, repo, baseSha, commitSha, installationId),
       ]);
+      const prFiles = await this.attachFullFileContents(snapshot, comparedFiles);
 
       const activeRules = await this.rules.getActiveRulesForRepo(repositoryId, prFiles);
       const compareFiles = previousAnalysis
@@ -121,9 +122,14 @@ export class AnalysisService {
 
       const verifiedIssues = await this.verifyIssuesAgainstCurrentFiles(snapshot, rawIssues);
       const nonSecretIssues = this.dropEnvVarSecretFalsePositives(verifiedIssues);
-      const liveIssues = await this.dropCakeFixtureTestFalsePositives(
+      const guardedIssues = await this.dropCakeFixtureTestFalsePositives(
         snapshot,
         nonSecretIssues,
+        prFiles,
+      );
+      const liveIssues = await this.dropCriticRefutedIssues(
+        snapshot,
+        guardedIssues,
         prFiles,
       );
 
@@ -265,6 +271,155 @@ export class AnalysisService {
       this.logger.warn(`Could not load AGENTS.md for ${snapshot.owner}/${snapshot.repo}: ${String(err)}`);
       return undefined;
     }
+  }
+
+  /**
+   * Attaches the full head content to changed files small enough to fit,
+   * so the LLM can verify claims about code outside the diff hunks
+   * (declarations at the top of the file, existing methods, constants).
+   */
+  private async attachFullFileContents(
+    snapshot: AnalysisSnapshot,
+    files: Array<{ filename: string; patch: string; status: string }>,
+  ): Promise<Array<{ filename: string; patch: string; status: string; fullContent?: string }>> {
+    const maxChars = this.getFullContentMaxChars();
+    if (maxChars <= 0) {
+      return files;
+    }
+
+    return Promise.all(
+      files.map(async (file) => {
+        if (file.status === 'removed') {
+          return file;
+        }
+
+        try {
+          const content = await this.github.getFileContent(
+            snapshot.owner,
+            snapshot.repo,
+            file.filename,
+            snapshot.installationId,
+            snapshot.headSha,
+          );
+          if (!content || content.length > maxChars) {
+            return file;
+          }
+          return { ...file, fullContent: content };
+        } catch (err) {
+          this.logger.warn(
+            `Could not fetch full content of ${file.filename}; keeping hunks only: ${String(err)}`,
+          );
+          return file;
+        }
+      }),
+    );
+  }
+
+  private getFullContentMaxChars(): number {
+    const parsed = Number.parseInt(
+      this.config.get<string>('FULL_FILE_CONTEXT_MAX_CHARS') ?? '',
+      10,
+    );
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 12000;
+  }
+
+  /**
+   * Critic pass (draft → critic): re-checks each surviving issue against the
+   * full content of the involved files and drops the ones the critic refutes
+   * with proof. Fails open — any error keeps the issues untouched.
+   */
+  private async dropCriticRefutedIssues(
+    snapshot: AnalysisSnapshot,
+    issues: ReviewIssue[],
+    prFiles: Array<{ filename: string; patch: string; status: string; fullContent?: string }>,
+  ): Promise<ReviewIssue[]> {
+    if (issues.length === 0 || !this.isCriticEnabled()) {
+      return issues;
+    }
+
+    const keyedIssues = issues.map((issue) => ({
+      ...issue,
+      issueKey: issue.issueKey ?? buildIssueKey(issue),
+    }));
+
+    const involvedPaths = new Set<string>();
+    for (const issue of keyedIssues) {
+      involvedPaths.add(issue.file);
+      if (issue.evidence?.file) {
+        involvedPaths.add(issue.evidence.file);
+      }
+    }
+
+    const attachedContent = new Map(
+      prFiles
+        .filter((file) => file.fullContent)
+        .map((file) => [file.filename, file.fullContent as string]),
+    );
+
+    const maxChars = this.getCriticFileMaxChars();
+    const fileContents: Array<{ path: string; content: string }> = [];
+    for (const path of involvedPaths) {
+      let content = attachedContent.get(path) ?? null;
+      if (content === null) {
+        try {
+          content = await this.github.getFileContent(
+            snapshot.owner,
+            snapshot.repo,
+            path,
+            snapshot.installationId,
+            snapshot.headSha,
+          );
+        } catch (err) {
+          this.logger.warn(
+            `Critic could not fetch ${path}; issues on it stay unverified: ${String(err)}`,
+          );
+          content = null;
+        }
+      }
+      if (content) {
+        fileContents.push({
+          path,
+          content:
+            content.length > maxChars
+              ? `${content.slice(0, maxChars)}\n// [truncated after ${maxChars} characters]`
+              : content,
+        });
+      }
+    }
+
+    try {
+      const refutedKeys = await this.llm.critiqueIssues(keyedIssues, fileContents);
+      if (refutedKeys.size === 0) {
+        return keyedIssues;
+      }
+      return keyedIssues.filter((issue) => {
+        if (refutedKeys.has(issue.issueKey)) {
+          this.logger.log(
+            `Dropping critic-refuted issue for rule "${issue.rule}" in ${issue.file}`,
+          );
+          return false;
+        }
+        return true;
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Critic pass failed; keeping all ${keyedIssues.length} issue(s): ${String(err)}`,
+      );
+      return keyedIssues;
+    }
+  }
+
+  private isCriticEnabled(): boolean {
+    const raw = (this.config.get<string>('LLM_CRITIC_ENABLED') ?? '').trim().toLowerCase();
+    return raw !== 'false' && raw !== '0';
+  }
+
+  private getCriticFileMaxChars(): number {
+    const parsed = Number.parseInt(
+      this.config.get<string>('CRITIC_FILE_MAX_CHARS') ?? '',
+      10,
+    );
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 30000;
   }
 
   private async verifyIssuesAgainstCurrentFiles(

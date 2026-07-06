@@ -38,6 +38,7 @@ const mockRules = {
 const mockLlm = {
   analyze: jest.fn(),
   analyzeGeneral: jest.fn().mockResolvedValue([]),
+  critiqueIssues: jest.fn().mockResolvedValue(new Set()),
 };
 
 const mockDiff = {};
@@ -177,37 +178,30 @@ Some repository conventions live here.
       expect(mockGithub.getCompareFiles).toHaveBeenCalledTimes(1);
       expect(mockGithub.getCompareFiles).toHaveBeenCalledWith('org', 'repo', 'base456', 'abc123', 42);
 
-      expect(mockRules.getActiveRulesForRepo).toHaveBeenCalledWith('repo-db-id', [
+      const enrichedFiles = [
         {
           filename: 'src/app.ts',
           patch: '@@ -1 +1 @@\n+const secret = "hardcoded";',
           status: 'modified',
+          fullContent: 'const secret = "hardcoded";',
         },
-      ]);
+      ];
+      expect(mockRules.getActiveRulesForRepo).toHaveBeenCalledWith(
+        'repo-db-id',
+        enrichedFiles,
+      );
       expect(mockSharedFiles.fetchSharedFilesContext).toHaveBeenCalledWith(
         'org',
         'repo',
         42,
-        [
-          {
-            filename: 'src/app.ts',
-            patch: '@@ -1 +1 @@\n+const secret = "hardcoded";',
-            status: 'modified',
-          },
-        ],
+        enrichedFiles,
         'abc123',
         [],
       );
       expect(mockLlm.analyze).toHaveBeenCalledWith(
         'Fix bug',
         'details',
-        [
-          {
-            filename: 'src/app.ts',
-            patch: '@@ -1 +1 @@\n+const secret = "hardcoded";',
-            status: 'modified',
-          },
-        ],
+        enrichedFiles,
         '',
         [
           {
@@ -230,22 +224,10 @@ Some repository conventions live here.
       expect(mockLlm.analyzeGeneral).toHaveBeenCalledWith(
         'Fix bug',
         'details',
-        [
-          {
-            filename: 'src/app.ts',
-            patch: '@@ -1 +1 @@\n+const secret = "hardcoded";',
-            status: 'modified',
-          },
-        ],
+        enrichedFiles,
         '# Notes\n\nSome repository conventions live here.',
         [],
-        [
-          {
-            filename: 'src/app.ts',
-            patch: '@@ -1 +1 @@\n+const secret = "hardcoded";',
-            status: 'modified',
-          },
-        ],
+        enrichedFiles,
       );
       expect(mockScoring.calculate).toHaveBeenCalledWith(
         [
@@ -732,6 +714,96 @@ Some repository conventions live here.
         expect.objectContaining({
           data: expect.objectContaining({
             issues: [],
+          }),
+        }),
+      );
+    });
+
+    it('should drop issues refuted by the critic pass', async () => {
+      mockPrisma.analysis.findUnique.mockResolvedValue(null);
+      mockGithub.getCompareFiles.mockResolvedValue([
+        {
+          filename: 'php/app/Controller/PedidosController.php',
+          patch: '@@ -1 +1 @@\n+public function warRoom() {}',
+          status: 'modified',
+        },
+      ]);
+      mockGithub.getFileContent.mockImplementation((_o: string, _r: string, path: string) => {
+        if (path === 'php/app/Controller/PedidosController.php') {
+          return Promise.resolve("public $uses = ['Pedido'];\npublic function warRoom() {}");
+        }
+        return Promise.resolve(undefined);
+      });
+      mockRules.getActiveRulesForRepo.mockResolvedValue(EMPTY_ACTIVE_RULES);
+      mockLlm.analyze.mockResolvedValue([
+        {
+          file: 'php/app/Controller/PedidosController.php',
+          snippet: 'public function warRoom() {}',
+          description: 'Model used without $uses declaration.',
+          reason: 'warRoom uses Pedido without declaring it.',
+          criticality: 'medium',
+          rule: 'Controllers Must Declare Accessed Models In $uses',
+        },
+      ]);
+      mockLlm.critiqueIssues.mockImplementationOnce((issues: any[]) =>
+        Promise.resolve(new Set([issues[0].issueKey])),
+      );
+      mockScoring.calculate.mockReturnValue(100);
+      mockPrisma.analysis.create.mockResolvedValue({ id: 'analysis-critic', score: 100 });
+
+      const svc = makeService();
+      await svc.runPipeline(EVENT);
+
+      expect(mockLlm.critiqueIssues).toHaveBeenCalledWith(
+        [expect.objectContaining({ rule: 'Controllers Must Declare Accessed Models In $uses' })],
+        [
+          expect.objectContaining({
+            path: 'php/app/Controller/PedidosController.php',
+            content: expect.stringContaining("public $uses = ['Pedido'];"),
+          }),
+        ],
+      );
+      expect(mockPrisma.analysis.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ issues: [] }),
+        }),
+      );
+    });
+
+    it('should keep all issues when the critic pass fails', async () => {
+      mockPrisma.analysis.findUnique.mockResolvedValue(null);
+      mockGithub.getCompareFiles.mockResolvedValue([
+        {
+          filename: 'src/app.ts',
+          patch: '@@ -1 +1 @@\n+const secret = "hardcoded";',
+          status: 'modified',
+        },
+      ]);
+      mockGithub.getFileContent.mockImplementation((_o: string, _r: string, path: string) =>
+        Promise.resolve(path === 'src/app.ts' ? 'const secret = "hardcoded";' : undefined),
+      );
+      mockRules.getActiveRulesForRepo.mockResolvedValue(EMPTY_ACTIVE_RULES);
+      mockLlm.analyze.mockResolvedValue([
+        {
+          file: 'src/app.ts',
+          snippet: 'const secret = "hardcoded";',
+          description: 'Hardcoded secret',
+          reason: 'Exposes credentials',
+          criticality: 'high',
+          rule: 'Security',
+        },
+      ]);
+      mockLlm.critiqueIssues.mockRejectedValueOnce(new Error('critic unavailable'));
+      mockScoring.calculate.mockReturnValue(90);
+      mockPrisma.analysis.create.mockResolvedValue({ id: 'analysis-critic-fail', score: 90 });
+
+      const svc = makeService();
+      await svc.runPipeline(EVENT);
+
+      expect(mockPrisma.analysis.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            issues: [expect.objectContaining({ rule: 'Security' })],
           }),
         }),
       );
