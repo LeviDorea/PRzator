@@ -59,7 +59,10 @@ export class SharedFilesService {
         continue;
       }
 
-      const imports = this.extractRelativeImports(file.patch, language);
+      const imports = this.extractRelativeImports(
+        this.currentStateLines(file.patch),
+        language,
+      );
       for (const imp of imports) {
         const resolved = this.resolveImportPath(file.filename, imp);
         if (resolved) sharedPaths.add(resolved);
@@ -81,6 +84,24 @@ export class SharedFilesService {
     }
 
     return contents.join('\n\n---\n\n');
+  }
+
+  /**
+   * Keeps only the lines that are actually present in the file at the diff's
+   * head (added `+` and unchanged context lines), dropping removed `-`
+   * lines. Without this, an import deleted by this very PR still matches
+   * the regex and gets resolved/fetched as "shared context" noise.
+   */
+  private currentStateLines(patch: string): string {
+    return patch
+      .split('\n')
+      .filter(
+        (line) =>
+          !line.startsWith('@@') && !line.startsWith('+++') && !line.startsWith('---'),
+      )
+      .filter((line) => line.startsWith('+') || line.startsWith(' '))
+      .map((line) => line.slice(1))
+      .join('\n');
   }
 
   private resolveImportPath(fromFile: string, importPath: string): string | null {

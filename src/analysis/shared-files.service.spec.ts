@@ -40,11 +40,13 @@ describe('SharedFilesService', () => {
   });
 
   describe('fetchSharedFilesContext', () => {
-    it('should fetch and return content for relative imports', async () => {
+    it('should fetch and return content for relative imports added in the diff', async () => {
       mockGithub.getFileContent.mockResolvedValue('export const x = 1;');
       const svc = makeService();
 
-      const files = [{ filename: 'src/app.ts', patch: `import { x } from './utils';` }];
+      const files = [
+        { filename: 'src/app.ts', patch: `@@ -1 +1 @@\n+import { x } from './utils';` },
+      ];
       const result = await svc.fetchSharedFilesContext('org', 'repo', 1, files, 'sha123');
 
       expect(mockGithub.getFileContent).toHaveBeenCalledWith('org', 'repo', 'src/utils', 1, 'sha123');
@@ -52,18 +54,56 @@ describe('SharedFilesService', () => {
       expect(result).toContain('Context only. Do not report standalone issues for this file.');
     });
 
+    it('should fetch and return content for relative imports left untouched as diff context', async () => {
+      mockGithub.getFileContent.mockResolvedValue('export const x = 1;');
+      const svc = makeService();
+
+      const files = [
+        {
+          filename: 'src/app.ts',
+          patch: `@@ -1,2 +1,2 @@\n import { x } from './utils';\n-const y = 1;\n+const y = 2;`,
+        },
+      ];
+      const result = await svc.fetchSharedFilesContext('org', 'repo', 1, files, 'sha123');
+
+      expect(mockGithub.getFileContent).toHaveBeenCalledWith('org', 'repo', 'src/utils', 1, 'sha123');
+      expect(result).toContain('export const x = 1;');
+    });
+
+    it('should not resolve or fetch an import that was removed by this PR', async () => {
+      const svc = makeService();
+
+      const files = [
+        {
+          filename: 'src/app.ts',
+          patch: `@@ -1,2 +1,1 @@\n-import { x } from './removed';\n-const y = x;\n+const y = 1;`,
+        },
+      ];
+      const result = await svc.fetchSharedFilesContext('org', 'repo', 1, files, 'sha123');
+
+      expect(mockGithub.getFileContent).not.toHaveBeenCalled();
+      expect(result).toBe('');
+    });
+
     it('should skip files that fail to fetch', async () => {
       mockGithub.getFileContent.mockRejectedValue(new Error('not found'));
       const svc = makeService();
 
-      const files = [{ filename: 'src/app.ts', patch: `import { x } from './missing';` }];
+      const files = [
+        { filename: 'src/app.ts', patch: `@@ -1 +1 @@\n+import { x } from './missing';` },
+      ];
       const result = await svc.fetchSharedFilesContext('org', 'repo', 1, files, 'sha123');
       expect(result).toBe('');
     });
 
     it('should return empty string when no relative imports found', async () => {
       const svc = makeService();
-      const files = [{ filename: 'src/app.ts', patch: `import { Injectable } from '@nestjs/common';` }];
+      const files = [
+        {
+          filename: 'src/app.ts',
+          patch: `@@ -1 +1 @@\n+import { Injectable } from '@nestjs/common';`,
+        },
+      ];
       const result = await svc.fetchSharedFilesContext('org', 'repo', 1, files, 'sha123');
       expect(result).toBe('');
       expect(mockGithub.getFileContent).not.toHaveBeenCalled();
@@ -73,8 +113,8 @@ describe('SharedFilesService', () => {
       mockGithub.getFileContent.mockResolvedValue('export const helper = true;');
       const svc = makeService();
       const files = [
-        { filename: 'src/app.ts', patch: `import { helper } from './helper';` },
-        { filename: 'assets/logo.svg', patch: `<svg></svg>` },
+        { filename: 'src/app.ts', patch: `@@ -1 +1 @@\n+import { helper } from './helper';` },
+        { filename: 'assets/logo.svg', patch: `@@ -1 +1 @@\n+<svg></svg>` },
       ];
 
       const result = await svc.fetchSharedFilesContext('org', 'repo', 1, files, 'sha123');
