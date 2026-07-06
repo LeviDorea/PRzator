@@ -141,7 +141,15 @@ export class RulesService {
         }),
       ]);
 
-    return [...defaultRules, ...globalCustomRules, ...repoSpecificRules];
+    const customRules = [...globalCustomRules, ...repoSpecificRules];
+    const supersededDefaultTitles = new Set(
+      customRules.flatMap((rule) => rule.supersedesDefaults ?? []),
+    );
+    const activeDefaultRules = defaultRules.filter(
+      (rule) => !supersededDefaultTitles.has(rule.title),
+    );
+
+    return [...activeDefaultRules, ...customRules];
   }
 
   private ruleMatchesFile(

@@ -197,6 +197,34 @@ describe('RulesService', () => {
       });
     });
 
+    it('should drop default rules superseded by an active custom rule', async () => {
+      const defaultRules = [
+        { ...DEFAULT_RULE, id: 'd1', title: 'Magic Number Without Named Constant' },
+        { ...DEFAULT_RULE, id: 'd2', title: 'SQL Injection Risk' },
+      ];
+      const repoSpecific = [
+        {
+          ...CUSTOM_RULE,
+          id: 'r1',
+          title: 'Reuse Domain Constants',
+          supersedesDefaults: ['Magic Number Without Named Constant'],
+        },
+      ];
+
+      mockPrisma.rule.findMany
+        .mockResolvedValueOnce(defaultRules)
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce(repoSpecific);
+
+      const svc = makeService();
+      const result = await svc.getActiveRulesForRepo('repo-x', [
+        { filename: 'src/app/service.ts' },
+      ]);
+
+      const titles = result.files[0].rules.map((rule) => rule.title);
+      expect(titles).toEqual(['SQL Injection Risk', 'Reuse Domain Constants']);
+    });
+
     it('should exclude rules whose glob or language does not match the file', async () => {
       mockPrisma.rule.findMany
         .mockResolvedValueOnce([DEFAULT_RULE])

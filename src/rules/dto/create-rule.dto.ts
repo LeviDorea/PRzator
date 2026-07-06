@@ -40,4 +40,9 @@ export class CreateRuleDto {
   @IsString({ each: true })
   @IsOptional()
   localEvidence?: string[];
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  supersedesDefaults?: string[];
 }
