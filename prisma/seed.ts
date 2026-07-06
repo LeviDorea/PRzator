@@ -12,10 +12,16 @@ const DEFAULT_RULES = [
       'Do not flag placeholder or example values in `.env.example`/`.env.dev`-style template files, ' +
       'sample configs, or docs (e.g. `your-db-password`, `changeme`, `xxx`, `<INSERT_KEY_HERE>`) — ' +
       'those are documentation of which variables to set, not exposed secrets. ' +
-      'Only flag a value that looks like a real, working credential: a plausible token/API key format, ' +
-      'a private key body, or a password that is not an obvious placeholder. ' +
+      'Reading a secret from an environment variable is the CORRECT pattern and is never a violation, ' +
+      'regardless of language or syntax. This includes `process.env.X` (JS/TS), `os.environ["X"]` (Python), ' +
+      'and shell/config references like `$VAR`, `${VAR}`, or `-p"${VAR}"` in `.sh`, Dockerfile, YAML, or CI files — ' +
+      'a `${MYSQL_ROOT_PASSWORD}` reference is the value being read from the environment, not a hardcoded secret. ' +
+      'Only flag a value that looks like a real, working credential written literally in the source: ' +
+      'a plausible token/API key format, a private key body, or a password that is not an obvious placeholder ' +
+      'and is not an environment-variable reference. ' +
       'Bad: `const apiKey = "sk-live-4f9a1c8b2e"`. Good: `const apiKey = process.env.API_KEY`. ' +
-      'Not a violation: `DB_PASSWORD=your-db-password` in an example env file.',
+      'Not a violation: `DB_PASSWORD=your-db-password` in an example env file, ' +
+      'or `mysql -p"${MYSQL_ROOT_PASSWORD}"` in a shell script.',
     criticality: Criticality.high,
     isDefault: true,
   },
