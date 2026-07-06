@@ -321,6 +321,44 @@ export class GithubService {
     );
   }
 
+  async addPrReaction(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    installationId: number,
+    content:
+      | '+1'
+      | '-1'
+      | 'laugh'
+      | 'confused'
+      | 'heart'
+      | 'hooray'
+      | 'rocket'
+      | 'eyes' = 'eyes',
+  ): Promise<void> {
+    try {
+      const octokit = await this.getInstallationOctokit(installationId);
+      await withRetry(
+        () =>
+          (octokit as any).request(
+            'POST /repos/{owner}/{repo}/issues/{issue_number}/reactions',
+            { owner, repo, issue_number: prNumber, content },
+          ),
+        this.githubRetryOpts,
+      );
+    } catch (err) {
+      // Reação é cosmética: nunca pode derrubar o pipeline de análise.
+      this.logger.warn('Failed to add PR reaction', {
+        module: 'GithubService',
+        action: 'addPrReaction',
+        owner,
+        repo,
+        prNumber,
+        error: String(err),
+      });
+    }
+  }
+
   async upsertManagedComment(
     owner: string,
     repo: string,

@@ -82,6 +82,9 @@ export class AnalysisService {
         return;
       }
 
+      // 👀 no PR sinaliza que a análise começou; nunca bloqueia nem falha o pipeline.
+      void this.github.addPrReaction(owner, repo, prNumber, installationId);
+
       const [previousAnalysis, comparedFiles] = await Promise.all([
         this.findPreviousAnalysis(repositoryId, prNumber, commitSha),
         this.github.getCompareFiles(owner, repo, baseSha, commitSha, installationId),

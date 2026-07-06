@@ -29,6 +29,7 @@ const mockPrisma = {
 const mockGithub = {
   getCompareFiles: jest.fn(),
   getFileContent: jest.fn(),
+  addPrReaction: jest.fn().mockResolvedValue(undefined),
 };
 
 const mockRules = {
