@@ -72,6 +72,39 @@ describe('CommentService', () => {
       expect(result).toContain('Nenhum problema encontrado');
     });
 
+    it('should keep a blank line before the tip alert so GitHub renders it after </details>', () => {
+      const result = svc.formatMarkdown({
+        score: 100,
+        prTitle: 'PR',
+        issues: [],
+        generalIssues: [
+          {
+            file: 'src/app.ts',
+            snippet: '',
+            description: 'Sugestão',
+            reason: '',
+            criticality: 'low' as const,
+            issueKey: 'g1',
+          },
+        ],
+      });
+      expect(result).toContain('</details>\n\n> [!TIP]');
+    });
+
+    it('should start with the invisible managed-comment marker and drop the emoji header', () => {
+      const result = svc.formatMarkdown({ score: 100, prTitle: 'PR', issues: [] });
+      expect(result.startsWith('<!-- przator:analysis -->')).toBe(true);
+      expect(result).toContain('## PRzator · Análise automática');
+      expect(result).not.toContain('🤖');
+    });
+
+    it('should render badges as plain img tags with a wider gap after the score', () => {
+      const result = svc.formatMarkdown({ score: 100, prTitle: 'PR', issues: [] });
+      expect(result).toContain('<img alt="Nota"');
+      expect(result).not.toContain('![Nota]');
+      expect(result).toContain('&nbsp;&nbsp;&nbsp;&nbsp;<img alt="Alta"');
+    });
+
     it('should render each scored issue as a native GitHub alert, ordered by criticality', () => {
       const result = svc.formatMarkdown({
         score: 75,

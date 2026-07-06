@@ -1,8 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { withRetry } from '../common/utils/retry.util';
+import { MANAGED_ANALYSIS_COMMENT_MARKER } from '../comment/comment.service';
 
-const MANAGED_ANALYSIS_COMMENT_MARKER = '## 🤖 PRzator · Análise automática';
+// Comments posted before the invisible marker existed carry this header.
+const LEGACY_MANAGED_COMMENT_MARKER = '## 🤖 PRzator · Análise automática';
 
 @Injectable()
 export class GithubService {
@@ -328,30 +330,42 @@ export class GithubService {
     marker = MANAGED_ANALYSIS_COMMENT_MARKER,
   ): Promise<void> {
     const octokit = await this.getInstallationOctokit(installationId);
-    const { data } = await withRetry<{ data: any[] }>(
-      () =>
-        (octokit as any).request(
-          'GET /repos/{owner}/{repo}/issues/{issue_number}/comments',
-          { owner, repo, issue_number: prNumber, per_page: 100 },
-        ),
-      {
-        ...this.githubRetryOpts,
-        onFinalFailure: async (err: unknown) => {
-          this.logger.error('Failed to list comments after all retries', {
-            module: 'GithubService',
-            action: 'upsertManagedComment.listComments',
-            owner,
-            repo,
-            prNumber,
-            error: String(err),
-          });
+    const allComments: any[] = [];
+    for (let page = 1; ; page++) {
+      const { data } = await withRetry<{ data: any[] }>(
+        () =>
+          (octokit as any).request(
+            'GET /repos/{owner}/{repo}/issues/{issue_number}/comments',
+            { owner, repo, issue_number: prNumber, per_page: 100, page },
+          ),
+        {
+          ...this.githubRetryOpts,
+          onFinalFailure: async (err: unknown) => {
+            this.logger.error('Failed to list comments after all retries', {
+              module: 'GithubService',
+              action: 'upsertManagedComment.listComments',
+              owner,
+              repo,
+              prNumber,
+              error: String(err),
+            });
+          },
         },
-      },
-    );
+      );
+      allComments.push(...data);
+      if (data.length < 100) {
+        break;
+      }
+    }
 
-    const existingComment = [...data]
+    const existingComment = [...allComments]
       .reverse()
-      .find((comment) => typeof comment?.body === 'string' && comment.body.includes(marker));
+      .find(
+        (comment) =>
+          typeof comment?.body === 'string' &&
+          (comment.body.includes(marker) ||
+            comment.body.includes(LEGACY_MANAGED_COMMENT_MARKER)),
+      );
 
     if (!existingComment) {
       await this.publishComment(owner, repo, prNumber, installationId, body);

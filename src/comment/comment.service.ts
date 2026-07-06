@@ -19,6 +19,13 @@ type CommentIssue = Pick<
 
 const GRAY = '484f58';
 
+/**
+ * Invisible marker identifying the bot's managed analysis comment for
+ * upserts. Never rendered by GitHub, so the visible header can change
+ * freely without breaking comment updates.
+ */
+export const MANAGED_ANALYSIS_COMMENT_MARKER = '<!-- przator:analysis -->';
+
 @Injectable()
 export class CommentService {
   private readonly ALERT_TYPES: Record<CommentIssue['criticality'], string> = {
@@ -36,12 +43,12 @@ export class CommentService {
     const mediumCount = scoredIssues.filter((i) => i.criticality === 'medium').length;
     const lowCount = scoredIssues.filter((i) => i.criticality === 'low').length;
 
-    const badges = [
-      this.badge('Nota', `${score}/100`, this.scoreColor(score)),
+    const countBadges = [
       this.badge('Alta', String(highCount), highCount > 0 ? 'da3633' : GRAY),
       this.badge('Média', String(mediumCount), mediumCount > 0 ? 'd4a72c' : GRAY),
       this.badge('Baixa', String(lowCount), lowCount > 0 ? '388bfd' : GRAY),
     ].join(' ');
+    const badges = `${this.badge('Nota', `${score}/100`, this.scoreColor(score))}&nbsp;&nbsp;&nbsp;&nbsp;${countBadges}`;
 
     const sections: string[] = [];
 
@@ -80,6 +87,9 @@ export class CommentService {
 
     if (scoredIssues.length === 0) {
       const allClear = advisoryIssues.length === 0 && generalIssues.length === 0;
+      // Blank line first: without it the alert that follows a </details>
+      // block is not recognised by GitHub and renders as literal text.
+      sections.push('');
       sections.push(
         [
           '> [!TIP]',
@@ -92,7 +102,8 @@ export class CommentService {
     }
 
     return [
-      '## 🤖 PRzator · Análise automática',
+      MANAGED_ANALYSIS_COMMENT_MARKER,
+      '## PRzator · Análise automática',
       '',
       badges,
       '',
@@ -103,7 +114,9 @@ export class CommentService {
 
   private badge(label: string, message: string, color: string): string {
     const encode = (value: string) => encodeURIComponent(value).replace(/-/g, '--');
-    return `![${label}](https://img.shields.io/badge/${encode(label)}-${encode(message)}-${color})`;
+    // Raw <img> instead of markdown image: GitHub wraps markdown images in a
+    // link to the image URL, making the badge clickable; plain HTML is not.
+    return `<img alt="${label}" src="https://img.shields.io/badge/${encode(label)}-${encode(message)}-${color}">`;
   }
 
   private scoreColor(score: number): string {
@@ -181,7 +194,7 @@ export class CommentService {
 
   formatFailureComment(prNumber: number, error: string): string {
     return [
-      '## 🤖 PRzator · Análise automática',
+      '## PRzator · Análise automática',
       '',
       '> [!CAUTION]',
       `> A análise do PR #${prNumber} falhou.`,
