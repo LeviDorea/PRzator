@@ -82,6 +82,10 @@ type LlmIssue = z.infer<typeof IssueSchema>;
 type LlmGeneralIssue = z.infer<typeof GeneralIssueSchema>;
 const DEFAULT_MAX_DIFF_TOKENS = 12000;
 
+function supportsCustomTemperature(model: string): boolean {
+  return !/^(gpt-5|o\d)/i.test(model);
+}
+
 @Injectable()
 export class LlmService {
   private readonly logger = new Logger(LlmService.name);
@@ -92,9 +96,12 @@ export class LlmService {
     private readonly config: ConfigService,
     private readonly diffService: DiffService,
   ) {
+    const modelName = config.get<string>('OPENAI_MODEL') || 'gpt-4o';
     this.model = new ChatOpenAI({
-      model: config.get<string>('OPENAI_MODEL') || 'gpt-4o',
-      temperature: 0,
+      model: modelName,
+      // Reasoning models (gpt-5 family, o-series) only accept the default
+      // temperature; sending 0 is rejected with a 400.
+      ...(supportsCustomTemperature(modelName) ? { temperature: 0 } : {}),
       apiKey: config.get<string>('OPENAI_API_KEY') || '',
     });
     this.maxTokens = parseInt(
