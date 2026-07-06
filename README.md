@@ -158,8 +158,14 @@ O PRzator precisa de **três coisas rodando**: a API NestJS (com URL pública HT
 
 Em **Settings → Developer settings → GitHub Apps → New GitHub App** (na conta/organização da empresa, não na pessoal):
 
+Na seção **Webhook** do formulário:
+
+- **Active**: marcado (sem isso o GitHub não entrega nenhum evento)
 - **Webhook URL**: `https://SEU_DOMINIO/webhook/github`
-- **Webhook secret**: gere um valor aleatório forte (ex.: `openssl rand -hex 32`) — será o `GITHUB_WEBHOOK_SECRET`
+- **Webhook secret**: gere um valor aleatório forte (ex.: `openssl rand -hex 32`) — o mesmo valor vai em `GITHUB_WEBHOOK_SECRET` no `.env`, pois é com ele que a API valida a assinatura HMAC de cada entrega
+- **SSL verification**: *Enable* (padrão; não desabilite)
+
+> **Dica — testar sem servidor/domínio:** rode a API localmente e exponha com [ngrok](https://ngrok.com) (`ngrok http 3000`); use a URL gerada (ex.: `https://xxxx.ngrok-free.dev/webhook/github`) como Webhook URL do App e aponte também o `WEBHOOK_URL` do `.env` para a base do ngrok. Serve para validar o fluxo inteiro antes do deploy definitivo — depois é só trocar a URL nas configurações do App para a do servidor. A aba **Advanced** do App mostra as entregas recentes do webhook (*Recent Deliveries*), com payload e resposta — é o primeiro lugar para olhar quando o comentário não aparece no PR.
 
 **Repository permissions** (todas as demais ficam em *No access*):
 
