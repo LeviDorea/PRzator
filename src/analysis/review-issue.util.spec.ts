@@ -1,4 +1,46 @@
-import { buildIssueKey, issueMatchesDiff, snippetExistsInContent } from './review-issue.util';
+import {
+  buildIssueKey,
+  isEnvVarOnlySecretFinding,
+  issueMatchesDiff,
+  snippetExistsInContent,
+} from './review-issue.util';
+
+describe('isEnvVarOnlySecretFinding', () => {
+  it('treats a shell env-var reference as a false positive', () => {
+    expect(isEnvVarOnlySecretFinding('mysql -uroot -p"${MYSQL_ROOT_PASSWORD}"')).toBe(true);
+    expect(isEnvVarOnlySecretFinding('password=${MYSQL_ROOT_PASSWORD}')).toBe(true);
+    expect(isEnvVarOnlySecretFinding('export TOKEN=$GITHUB_TOKEN')).toBe(true);
+  });
+
+  it('treats process.env / os.environ references as false positives', () => {
+    expect(isEnvVarOnlySecretFinding('const apiKey = process.env.API_KEY;')).toBe(true);
+    expect(isEnvVarOnlySecretFinding("db_pass = os.environ['DB_PASSWORD']")).toBe(true);
+    expect(isEnvVarOnlySecretFinding("token = process.env['GH_TOKEN']")).toBe(true);
+  });
+
+  it('keeps a real hardcoded credential literal', () => {
+    expect(isEnvVarOnlySecretFinding('const apiKey = "sk-live-4f9a1c8b2e";')).toBe(false);
+    expect(isEnvVarOnlySecretFinding('token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";')).toBe(
+      false,
+    );
+    expect(isEnvVarOnlySecretFinding('key = "-----BEGIN RSA PRIVATE KEY-----"')).toBe(false);
+  });
+
+  it('keeps a snippet mixing an env ref AND a literal secret', () => {
+    expect(
+      isEnvVarOnlySecretFinding('const apiKey = process.env.API_KEY || "sk-live-9f2a1c8b7e4d";'),
+    ).toBe(false);
+  });
+
+  it('keeps a long high-entropy quoted literal even without a known prefix', () => {
+    expect(isEnvVarOnlySecretFinding('password=${DB} // was "aB3xK9mQ7pL2wZ8t"')).toBe(false);
+  });
+
+  it('does not suppress when there is no env-var reference at all', () => {
+    expect(isEnvVarOnlySecretFinding('const x = "changeme";')).toBe(false);
+    expect(isEnvVarOnlySecretFinding('')).toBe(false);
+  });
+});
 
 describe('issueMatchesDiff', () => {
   it('matches a snippet that was added in the diff', () => {

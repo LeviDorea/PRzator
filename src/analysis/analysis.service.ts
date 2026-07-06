@@ -16,7 +16,12 @@ import {
   ReviewIssueBaselineStatus,
 } from './review-issue.types';
 import { AnalysisSnapshot } from './analysis-snapshot.types';
-import { buildIssueKey, issueMatchesDiff, snippetExistsInContent } from './review-issue.util';
+import {
+  buildIssueKey,
+  isEnvVarOnlySecretFinding,
+  issueMatchesDiff,
+  snippetExistsInContent,
+} from './review-issue.util';
 import {
   ANALYSIS_COMPLETED,
   ANALYSIS_FAILED,
@@ -93,7 +98,8 @@ export class AnalysisService {
         activeRules,
       );
 
-      const liveIssues = await this.verifyIssuesAgainstCurrentFiles(snapshot, rawIssues);
+      const verifiedIssues = await this.verifyIssuesAgainstCurrentFiles(snapshot, rawIssues);
+      const liveIssues = this.dropEnvVarSecretFalsePositives(verifiedIssues);
 
       const previousGeneralIssues = this.parseStoredGeneralIssues(
         previousAnalysis?.generalIssues,
@@ -282,6 +288,25 @@ export class AnalysisService {
     }
 
     return verified;
+  }
+
+  /**
+   * Deterministic guard for the "Secret Exposure" rule: the LLM keeps flagging
+   * environment-variable references (e.g. `-p"${MYSQL_ROOT_PASSWORD}"`) as
+   * hardcoded secrets despite the rule text. Drop those false positives, but
+   * keep anything that still contains a plausible literal credential.
+   */
+  private dropEnvVarSecretFalsePositives(issues: ReviewIssue[]): ReviewIssue[] {
+    return issues.filter((issue) => {
+      const isSecretRule = /secret\s*exposure/i.test(issue.rule);
+      if (isSecretRule && isEnvVarOnlySecretFinding(issue.snippet)) {
+        this.logger.log(
+          `Dropping Secret Exposure false positive in ${issue.file}: snippet is an env-var reference, not a hardcoded secret`,
+        );
+        return false;
+      }
+      return true;
+    });
   }
 
   async findByRepository(repositoryId: string) {

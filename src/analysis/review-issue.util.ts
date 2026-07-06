@@ -42,6 +42,77 @@ export function issueMatchesDiff(
   return matchesDiffSnippet(issue.snippet, fileIndex);
 }
 
+// Patterns that read a secret FROM an environment variable — the correct,
+// non-hardcoded pattern, across shells/languages. Global so `.replace` strips all.
+const ENV_VAR_REFERENCE_PATTERNS: RegExp[] = [
+  /\$\{[A-Za-z_][A-Za-z0-9_]*\}/g, // ${VAR}
+  /\$[A-Za-z_][A-Za-z0-9_]*/g, // $VAR
+  /process\.env\.[A-Za-z_$][\w$]*/g, // process.env.X
+  /process\.env\[\s*['"][^'"]+['"]\s*\]/g, // process.env['X']
+  /os\.environ(?:\.get)?\s*[[(]\s*['"][^'"]+['"]/g, // os.environ['X'] / os.environ.get('X')
+  /System\.getenv\(\s*['"][^'"]+['"]\s*\)/g, // System.getenv("X")
+  /ENV\[\s*['"][^'"]+['"]\s*\]/g, // ENV['X'] (Ruby)
+];
+
+// Strong signals of a real, literal credential written in the source.
+const SECRET_LITERAL_PATTERNS: RegExp[] = [
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  /\bsk-[A-Za-z0-9]{8,}/,
+  /\bghp_[A-Za-z0-9]{20,}/,
+  /\bAKIA[0-9A-Z]{16}\b/,
+  /\bAIza[0-9A-Za-z\-_]{20,}/,
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}/,
+];
+
+function looksLikeCredentialLiteral(value: string): boolean {
+  const trimmed = value.trim();
+  return (
+    trimmed.length >= 16 &&
+    !/\s/.test(trimmed) &&
+    /[A-Za-z]/.test(trimmed) &&
+    /[0-9]/.test(trimmed)
+  );
+}
+
+/**
+ * True when a "Secret Exposure" finding points at what is actually just an
+ * environment-variable reference (e.g. `-p"${MYSQL_ROOT_PASSWORD}"`), with no
+ * real hardcoded credential literal in the snippet. Used as a deterministic
+ * guard to drop the LLM's false positives. Errs toward keeping (returns false)
+ * whenever a plausible literal secret remains after stripping env-var refs.
+ */
+export function isEnvVarOnlySecretFinding(snippet: string): boolean {
+  if (!snippet || !snippet.trim()) {
+    return false;
+  }
+
+  const hasEnvRef = ENV_VAR_REFERENCE_PATTERNS.some((re) => {
+    re.lastIndex = 0;
+    return re.test(snippet);
+  });
+  if (!hasEnvRef) {
+    return false;
+  }
+
+  let stripped = snippet;
+  for (const re of ENV_VAR_REFERENCE_PATTERNS) {
+    stripped = stripped.replace(re, '');
+  }
+
+  if (SECRET_LITERAL_PATTERNS.some((re) => re.test(stripped))) {
+    return false;
+  }
+
+  const quotedLiterals = stripped.match(/['"`]([^'"`]+)['"`]/g) ?? [];
+  for (const literal of quotedLiterals) {
+    if (looksLikeCredentialLiteral(literal.slice(1, -1))) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 export function snippetExistsInContent(snippet: string, content: string): boolean {
   const normalizedSnippet = normalizeCodeSnippet(snippet);
   if (!normalizedSnippet) {
