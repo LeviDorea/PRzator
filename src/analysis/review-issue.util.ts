@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { normalizePath } from '../common/utils/file-language.util';
 import { GeneralIssue, ReviewIssue } from './review-issue.types';
 
-type IssueKeyInput = Pick<ReviewIssue, 'rule' | 'file' | 'reason' | 'description'>;
+type IssueKeyInput = Pick<ReviewIssue, 'rule' | 'file' | 'snippet'>;
 type GeneralIssueKeyInput = Pick<GeneralIssue, 'file' | 'reason' | 'description'>;
 type IssueSnippetInput = Pick<ReviewIssue, 'file' | 'snippet'>;
 type DiffLikeFile = { filename: string; patch: string };
@@ -10,8 +10,8 @@ type DiffLikeFile = { filename: string; patch: string };
 export function buildIssueKey(issue: IssueKeyInput): string {
   const source = [
     normalizeText(issue.rule),
-    normalizeText(issue.file),
-    normalizeText(issue.reason || issue.description),
+    normalizeText(normalizePath(issue.file)),
+    normalizeCodeSnippet(issue.snippet),
   ].join('::');
 
   return createHash('sha256').update(source).digest('hex');

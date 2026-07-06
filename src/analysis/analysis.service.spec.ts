@@ -252,9 +252,8 @@ Some repository conventions live here.
             rule: 'Security',
             issueKey: buildIssueKey({
               file: 'src/app.ts',
-              description: 'Persistent issue',
-              reason: 'Existing root cause',
               rule: 'Security',
+              snippet: 'persist()',
             }),
             baselineStatus: 'persistent',
           },
@@ -267,9 +266,8 @@ Some repository conventions live here.
             rule: 'Boas Práticas',
             issueKey: buildIssueKey({
               file: 'src/legacy.ts',
-              description: 'Legacy issue',
-              reason: 'Pre-existing debt',
               rule: 'Boas Práticas',
+              snippet: 'legacyProblem()',
             }),
             baselineStatus: 'known_debt',
           },
@@ -370,9 +368,8 @@ Some repository conventions live here.
             rule: 'Boas Práticas',
             issueKey: buildIssueKey({
               file: 'src/legacy.ts',
-              description: 'Legacy issue',
-              reason: 'Pre-existing debt',
               rule: 'Boas Práticas',
+              snippet: 'legacyProblem()',
             }),
             baselineStatus: 'known_debt',
           },

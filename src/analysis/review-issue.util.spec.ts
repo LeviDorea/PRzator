@@ -60,16 +60,32 @@ describe('snippetExistsInContent', () => {
 });
 
 describe('buildIssueKey', () => {
-  it('is stable for the same rule/file/reason regardless of casing or whitespace', () => {
-    const a = buildIssueKey({ rule: 'Security', file: 'src/app.ts', description: '', reason: 'Exposes credentials' });
-    const b = buildIssueKey({ rule: 'security', file: 'SRC/APP.TS', description: '', reason: '  exposes   credentials ' });
+  it('is stable for the same rule/file/snippet regardless of casing or whitespace', () => {
+    const a = buildIssueKey({
+      rule: 'Security',
+      file: 'src/app.ts',
+      snippet: 'if (secret) {\n  leak(secret);\n}',
+    });
+    const b = buildIssueKey({
+      rule: 'security',
+      file: 'SRC/APP.TS',
+      snippet: ' if (secret) {\n\n    leak(secret);\n } ',
+    });
 
     expect(a).toBe(b);
   });
 
-  it('differs when the reason changes', () => {
-    const a = buildIssueKey({ rule: 'Security', file: 'src/app.ts', description: '', reason: 'Exposes credentials' });
-    const b = buildIssueKey({ rule: 'Security', file: 'src/app.ts', description: '', reason: 'Exposes a different secret' });
+  it('differs when the snippet changes', () => {
+    const a = buildIssueKey({
+      rule: 'Security',
+      file: 'src/app.ts',
+      snippet: 'const secret = process.env.SECRET;',
+    });
+    const b = buildIssueKey({
+      rule: 'Security',
+      file: 'src/app.ts',
+      snippet: 'const secret = process.env.API_KEY;',
+    });
 
     expect(a).not.toBe(b);
   });
