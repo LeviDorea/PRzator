@@ -65,11 +65,11 @@ export class CommentService {
     }
 
     if (advisoryIssues.length > 0) {
-      sections.push(this.renderSection('Observações adicionais', advisoryIssues));
+      sections.push(this.renderCollapsedSection('Observações adicionais', advisoryIssues));
     }
 
     if (generalIssues.length > 0) {
-      sections.push(this.renderSection('Achados gerais', generalIssues));
+      sections.push(this.renderCollapsedSection('Achados gerais', generalIssues));
     }
 
     if (scoredIssues.length === 0) {
@@ -141,6 +141,20 @@ export class CommentService {
       lines.push(this.renderDetailsItem(issue));
       lines.push('');
     }
+    return lines.join('\n');
+  }
+
+  private renderCollapsedSection(title: string, sectionIssues: CommentIssue[]): string {
+    const lines: string[] = [
+      '<details>',
+      `<summary><strong>${title}</strong> <sub>— não afeta a nota</sub></summary>`,
+      '',
+    ];
+    for (const issue of sectionIssues) {
+      lines.push(this.renderDetailsItem(issue));
+      lines.push('');
+    }
+    lines.push('</details>');
     return lines.join('\n');
   }
 

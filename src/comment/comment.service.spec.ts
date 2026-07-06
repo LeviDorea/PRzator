@@ -129,14 +129,16 @@ describe('CommentService', () => {
       expect(result).toContain('_novo neste commit_');
     });
 
-    it('should render advisory issues under their own non-collapsed heading with per-item details', () => {
+    it('should render advisory issues collapsed under one section toggle, with per-item details nested inside', () => {
       const result = svc.formatMarkdown({
         score: 90,
         prTitle: 'PR',
         issues: [PERSISTENT_ISSUE, ADVISORY_ISSUE],
       });
 
-      expect(result).toContain('### Observações adicionais <sub>— não afeta a nota</sub>');
+      expect(result).toContain(
+        '<summary><strong>Observações adicionais</strong> <sub>— não afeta a nota</sub></summary>',
+      );
       expect(result).toContain('<summary><code>src/docs.md</code> — Extra documentation suggestion</summary>');
     });
 
@@ -153,7 +155,7 @@ describe('CommentService', () => {
       expect(result).toContain('D%C3%ADvida-1-db6d28');
     });
 
-    it('should render general issues under their own heading', () => {
+    it('should render general issues collapsed under one section toggle', () => {
       const result = svc.formatMarkdown({
         score: 90,
         prTitle: 'PR',
@@ -170,7 +172,9 @@ describe('CommentService', () => {
         ],
       });
 
-      expect(result).toContain('### Achados gerais <sub>— não afeta a nota</sub>');
+      expect(result).toContain(
+        '<summary><strong>Achados gerais</strong> <sub>— não afeta a nota</sub></summary>',
+      );
       expect(result).toContain('<summary><code>src/pedido.php</code> — Robustez</summary>');
     });
   });
