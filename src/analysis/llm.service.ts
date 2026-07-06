@@ -33,11 +33,14 @@ const IssueSchema = z.object({
           'Literal code excerpt copied verbatim from the diff or the shared context.',
         ),
     })
-    .optional()
+    // OpenAI strict structured output rejects optional properties, so the
+    // field is always present and null when there is nothing to cite.
+    .nullable()
     .describe(
       'Required whenever the violation claims something already exists elsewhere ' +
         '(a duplicate query, an existing constant/method to reuse). Cite the file and ' +
-        'the literal code you can see. If you cannot cite it, do not report the issue.',
+        'the literal code you can see. If you cannot cite it, do not report the issue. ' +
+        'Set to null when the violation does not depend on code existing elsewhere.',
     ),
 });
 
@@ -830,6 +833,8 @@ ${compactMode ? '## Notes\nThe full diff was too large, so the snippets above ar
       if (!uniqueIssues.has(key)) {
         uniqueIssues.set(key, {
           ...issue,
+          // Schema uses null (strict structured output); pipeline uses undefined.
+          evidence: issue.evidence ?? undefined,
           issueKey: key,
         });
       }
